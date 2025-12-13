@@ -21,8 +21,42 @@ import {
   scale,
   length,
 } from "./renderer";
-import { config, makeScene, getRedBallPosition } from "./scene";
+import { config, makeScene, getClaudePosition } from "./scene";
 import type { OptimizedBuffer } from "@opentui/core";
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+// =============================================================================
+// WASM Module
+// =============================================================================
+
+interface WasmExports {
+  memory: WebAssembly.Memory;
+  get_bg_ptr: () => number;
+  compute_background: (time: number) => void;
+}
+
+let wasmExports: WasmExports | null = null;
+
+async function loadWasm(): Promise<WasmExports> {
+  if (wasmExports) return wasmExports;
+  
+  const __dirname = dirname(fileURLToPath(import.meta.url));
+  const wasmPath = join(__dirname, "wasm", "renderer.wasm");
+  const wasmBuffer = readFileSync(wasmPath);
+  
+  const { instance } = await WebAssembly.instantiate(wasmBuffer, {});
+  wasmExports = instance.exports as unknown as WasmExports;
+  return wasmExports;
+}
+
+function getWasmBackground(wasm: WasmExports, time: number): Vec3 {
+  wasm.compute_background(time);
+  const ptr = wasm.get_bg_ptr();
+  const view = new Float32Array(wasm.memory.buffer, ptr, 3);
+  return [view[0]!, view[1]!, view[2]!];
+}
 
 // =============================================================================
 // Render Frame
@@ -336,11 +370,14 @@ async function main(): Promise<void> {
     console.log("Red ball positions over time:");
     console.log("t\tx\ty\tz");
     for (let t = 0; t <= args.debugBall; t += 0.5) {
-      const pos = getRedBallPosition(t);
+      const pos = getClaudePosition(t);
       console.log(`${t.toFixed(1)}\t${pos[0].toFixed(2)}\t${pos[1].toFixed(2)}\t${pos[2].toFixed(2)}`);
     }
     process.exit(0);
   }
+
+  // Load WASM module
+  const wasm = await loadWasm();
 
   // Create OpenTUI renderer
   const renderer = await createCliRenderer({
@@ -351,7 +388,6 @@ async function main(): Promise<void> {
   // Use terminal dimensions (renderer.width/height are set from stdout.columns/rows)
   const width = args.width ?? renderer.width;
   const height = args.height ?? renderer.height;
-  const bg = config.render.background;
   const lighting = config.lighting;
 
   // Create FrameBufferRenderable for raymarched content
@@ -396,15 +432,15 @@ async function main(): Promise<void> {
   titleBox.add(titleText);
   renderer.root.add(titleBox);
 
-  // Set background color
-  const bgColor = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
-  renderer.setBackgroundColor(bgColor);
-
   if (args.animate) {
     // Animation loop
     let t = 0;
 
     renderer.setFrameCallback(async (deltaTime) => {
+      // Get background color from WASM
+      const bg = getWasmBackground(wasm, t);
+      const bgColor = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
+      renderer.setBackgroundColor(bgColor);
       canvas.frameBuffer.clear(bgColor);
       renderFrame(t, width, height, canvas.frameBuffer, bg, lighting);
       t += deltaTime / 1000;
@@ -412,7 +448,10 @@ async function main(): Promise<void> {
 
     renderer.start();
   } else {
-    // Single frame
+    // Single frame - get background from WASM
+    const bg = getWasmBackground(wasm, args.time);
+    const bgColor = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
+    renderer.setBackgroundColor(bgColor);
     canvas.frameBuffer.clear(bgColor);
     renderFrame(args.time, width, height, canvas.frameBuffer, bg, lighting);
 
