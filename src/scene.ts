@@ -54,8 +54,14 @@ export type Config = typeof config;
 // =============================================================================
 
 const SEED = 42;
-const NUM_OBJECTS = 3;
-const SMOOTH_K = 8.0;
+const SMOOTH_K = 2.0;
+
+// Two-column layout: left and right thirds of screen, middle empty
+// Layout: | .25 padding | .25 spheres | .33 empty | .25 spheres | .17 padding |
+const COLUMN_X = 8.0;        // X position of columns (left at -X, right at +X)
+const COLUMN_SPACING_Y = 3.5; // Vertical spacing between spheres
+const SPHERES_PER_COLUMN = 4;
+const SPHERE_RADIUS = 1.8;
 
 // Seeded random number generator
 function seededRandom(seed: number) {
@@ -73,17 +79,36 @@ const phaseOffsets: number[] = [];
 const freqMultipliers: number[] = [];
 const noiseOffsets: Vec3[] = [];
 
-for (let i = 0; i < NUM_OBJECTS; i++) {
-  basePositions.push([
-    rng() * 4 - 2,
-    rng() * 4 - 2,
-    rng() * 4 - 2,
-  ]);
-  baseSizes.push(rng() + 1);
+// Generate two columns of spheres
+const columnYStart = -((SPHERES_PER_COLUMN - 1) / 2) * COLUMN_SPACING_Y;
+
+// Left column
+for (let i = 0; i < SPHERES_PER_COLUMN; i++) {
+  const px = -COLUMN_X;
+  const py = columnYStart + i * COLUMN_SPACING_Y;
+  const pz = 0;
+
+  basePositions.push([px, py, pz]);
+  baseSizes.push(SPHERE_RADIUS);
   phaseOffsets.push(rng() * 2 * Math.PI);
-  freqMultipliers.push(rng() + 0.5);
+  freqMultipliers.push(rng() * 0.5 + 0.75);
   noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
 }
+
+// Right column
+for (let i = 0; i < SPHERES_PER_COLUMN; i++) {
+  const px = COLUMN_X;
+  const py = columnYStart + i * COLUMN_SPACING_Y;
+  const pz = 0;
+
+  basePositions.push([px, py, pz]);
+  baseSizes.push(SPHERE_RADIUS);
+  phaseOffsets.push(rng() * 2 * Math.PI);
+  freqMultipliers.push(rng() * 0.5 + 0.75);
+  noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
+}
+
+const NUM_OBJECTS = basePositions.length;
 
 // Simplex noise
 const noise2D = createNoise2D(() => rng());
@@ -158,7 +183,7 @@ export function makeScene(
 
   return {
     scene: [[combined, color]],
-    overrides: { camera: { fov: 50 } },
+    overrides: { camera: { fov: 45 } },
   };
 }
 
