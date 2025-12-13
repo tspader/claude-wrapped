@@ -1,8 +1,13 @@
 #!/usr/bin/env bun
 /**
- * Terminal ray marcher CLI.
+ * Terminal ray marcher CLI using OpenTUI for rendering.
  */
 
+import {
+  createCliRenderer,
+  FrameBufferRenderable,
+  RGBA,
+} from "@opentui/core";
 import {
   Camera,
   RayMarcher,
@@ -15,6 +20,7 @@ import {
   length,
 } from "./renderer";
 import { config, makeScene } from "./scene";
+import type { OptimizedBuffer } from "@opentui/core";
 
 // =============================================================================
 // Render Frame
@@ -24,10 +30,10 @@ function renderFrame(
   t: number,
   width: number,
   height: number,
-  outputMode: "ascii" | "unicode" | "truecolor",
+  frameBuffer: OptimizedBuffer,
   background: Vec3,
   lighting: typeof config.lighting
-): string {
+): void {
   const result = makeScene(t, primitives);
   const scene = result.scene;
   const overrides = result.overrides ?? {};
@@ -161,11 +167,11 @@ function renderFrame(
     }
   }
 
-  return renderOutput(colors, width, height, outputMode, background);
+  renderToBuffer(colors, width, height, frameBuffer, background);
 }
 
 // =============================================================================
-// Output Rendering
+// Output Rendering (ASCII mode only)
 // =============================================================================
 
 function dither(brightness: number, row: number, col: number): number {
@@ -177,145 +183,41 @@ function dither(brightness: number, row: number, col: number): number {
   return brightness + (threshold - 0.5) * 0.15;
 }
 
-function renderOutput(
+function renderToBuffer(
   colors: Vec3[],
   width: number,
   height: number,
-  mode: "ascii" | "unicode" | "truecolor",
+  frameBuffer: OptimizedBuffer,
   background: Vec3
-): string {
-  const bgR = Math.floor(background[0] * 255);
-  const bgG = Math.floor(background[1] * 255);
-  const bgB = Math.floor(background[2] * 255);
+): void {
+  const chars = " .:-=+*#%@";
+  const bgColor = RGBA.fromValues(background[0], background[1], background[2], 1);
 
-  const lines: string[] = [];
+  for (let row = 0; row < height; row++) {
+    for (let col = 0; col < width; col++) {
+      const idx = row * width + col;
+      const c = colors[idx]!;
 
-  if (mode === "ascii") {
-    const chars = " .:-=+*#%@";
-    for (let row = 0; row < height; row++) {
-      let line = "";
-      for (let col = 0; col < width; col++) {
-        const idx = row * width + col;
-        const c = colors[idx]!;
-        let brightness = (c[0] + c[1] + c[2]) / 3;
-        brightness = dither(brightness, row, col);
-        let charIdx = Math.floor(brightness * (chars.length - 1));
-        charIdx = Math.max(0, Math.min(chars.length - 1, charIdx));
+      let brightness = (c[0] + c[1] + c[2]) / 3;
+      brightness = dither(brightness, row, col);
+      let charIdx = Math.floor(brightness * (chars.length - 1));
+      charIdx = Math.max(0, Math.min(chars.length - 1, charIdx));
 
-        const r = Math.floor(c[0] * 255);
-        const g = Math.floor(c[1] * 255);
-        const b = Math.floor(c[2] * 255);
+      const r = c[0];
+      const g = c[1];
+      const b = c[2];
 
-        if (r > 10 || g > 10 || b > 10) {
-          line += `\x1b[38;2;${r};${g};${b}m${chars[charIdx]}\x1b[0m`;
-        } else {
-          line += `\x1b[38;2;8;13;11m@\x1b[0m`;
-        }
+      // Check if pixel has color (not background)
+      if (r > 0.04 || g > 0.04 || b > 0.04) {
+        const fg = RGBA.fromValues(r, g, b, 1);
+        frameBuffer.setCell(col, row, chars[charIdx]!, fg, bgColor, 0);
+      } else {
+        // Dark background character
+        const darkFg = RGBA.fromValues(0.03, 0.05, 0.04, 1);
+        frameBuffer.setCell(col, row, "@", darkFg, bgColor, 0);
       }
-      lines.push(line);
-    }
-  } else if (mode === "unicode") {
-    const blocks = " \u2591\u2592\u2593\u2588";
-    for (let row = 0; row < height; row++) {
-      let line = "";
-      for (let col = 0; col < width; col++) {
-        const idx = row * width + col;
-        const c = colors[idx]!;
-        let brightness = (c[0] + c[1] + c[2]) / 3;
-        brightness = dither(brightness, row, col);
-        let blockIdx = Math.floor(brightness * (blocks.length - 1));
-        blockIdx = Math.max(0, Math.min(blocks.length - 1, blockIdx));
-
-        const r = Math.floor(c[0] * 255);
-        const g = Math.floor(c[1] * 255);
-        const b = Math.floor(c[2] * 255);
-
-        if (r > 10 || g > 10 || b > 10) {
-          line += `\x1b[38;2;${r};${g};${b}m${blocks[blockIdx]}\x1b[0m`;
-        } else {
-          line += blocks[blockIdx];
-        }
-      }
-      lines.push(line);
-    }
-  } else {
-    // truecolor
-    for (let row = 0; row < height; row++) {
-      let line = "";
-      for (let col = 0; col < width; col++) {
-        const idx = row * width + col;
-        const c = colors[idx]!;
-
-        let r: number, g: number, b: number;
-        if (c[0] > 0.01 || c[1] > 0.01 || c[2] > 0.01) {
-          r = Math.min(255, Math.floor(c[0] * 255));
-          g = Math.min(255, Math.floor(c[1] * 255));
-          b = Math.min(255, Math.floor(c[2] * 255));
-        } else {
-          r = bgR;
-          g = bgG;
-          b = bgB;
-        }
-        line += `\x1b[48;2;${bgR};${bgG};${bgB}m\x1b[38;2;${r};${g};${b}m\u2588\x1b[0m`;
-      }
-      lines.push(line);
     }
   }
-
-  return lines.join("\n");
-}
-
-// =============================================================================
-// Animation Loop
-// =============================================================================
-
-function runAnimation(
-  width: number,
-  height: number,
-  output: "ascii" | "unicode" | "truecolor",
-  fps: number
-): void {
-  const frameTime = 1000 / fps;
-  let t = 0;
-
-  // Hide cursor and clear screen
-  process.stdout.write("\x1b[?25l\x1b[2J");
-
-  const cleanup = () => {
-    process.stdout.write("\x1b[?25h");
-    process.exit(0);
-  };
-
-  process.on("SIGINT", cleanup);
-  process.on("SIGTERM", cleanup);
-
-  const renderLoop = () => {
-    const start = performance.now();
-
-    const w = width || config.render.width;
-    const h = height || config.render.height;
-    const outMode = output || config.render.output;
-    const bg = config.render.background;
-    const lighting = config.lighting;
-
-    const frame = renderFrame(t, w, h, outMode, bg, lighting);
-    const elapsed = performance.now() - start;
-    const actualFps = 1000 / elapsed;
-    const status = `\x1b[0m ${elapsed.toFixed(1)}ms | ${actualFps.toFixed(1)} fps | ${w}x${h}`;
-    process.stdout.write(`\x1b[H${frame}\n${status}`);
-
-    t += frameTime / 1000;
-
-    const sleepTime = frameTime - elapsed;
-
-    if (sleepTime > 0) {
-      setTimeout(renderLoop, sleepTime);
-    } else {
-      setImmediate(renderLoop);
-    }
-  };
-
-  renderLoop();
 }
 
 // =============================================================================
@@ -326,7 +228,6 @@ function parseArgs(): {
   time: number;
   width: number | null;
   height: number | null;
-  output: "ascii" | "unicode" | "truecolor" | null;
   animate: boolean;
   fps: number;
 } {
@@ -335,7 +236,6 @@ function parseArgs(): {
     time: 0,
     width: null as number | null,
     height: null as number | null,
-    output: null as "ascii" | "unicode" | "truecolor" | null,
     animate: false,
     fps: 30,
   };
@@ -355,13 +255,6 @@ function parseArgs(): {
       case "--height":
         result.height = parseInt(args[++i] || "40", 10);
         break;
-      case "-o":
-      case "--output":
-        const val = args[++i];
-        if (val === "ascii" || val === "unicode" || val === "truecolor") {
-          result.output = val;
-        }
-        break;
       case "-a":
       case "--animate":
         result.animate = true;
@@ -376,7 +269,6 @@ Options:
   -t, --time <float>    Time value for scene (default: 0)
   -w, --width <int>     Width in characters
   -h, --height <int>    Height in characters
-  -o, --output <mode>   Output mode: ascii, unicode, truecolor
   -a, --animate         Run animation loop
   --fps <int>           Frames per second (default: 30)
   --help                Show this help`);
@@ -387,25 +279,62 @@ Options:
   return result;
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = parseArgs();
 
-  // Get terminal size
-  const termWidth = process.stdout.columns || 80;
-  const termHeight = (process.stdout.rows || 24) - 1;
+  // Create OpenTUI renderer
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: true,
+    targetFps: args.fps,
+  });
 
-  const width = args.width ?? config.render.width ?? termWidth;
-  const height = args.height ?? config.render.height ?? termHeight;
-  const outMode = args.output ?? config.render.output;
+  const width = args.width ?? config.render.width ?? renderer.width;
+  const height = args.height ?? config.render.height ?? renderer.height;
   const bg = config.render.background;
   const lighting = config.lighting;
 
+  // Create FrameBufferRenderable for raymarched content
+  const canvas = new FrameBufferRenderable(renderer, {
+    id: "raymarcher",
+    width,
+    height,
+    position: "absolute",
+    left: 0,
+    top: 0,
+  });
+
+  renderer.root.add(canvas);
+
+  // Set background color
+  const bgColor = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
+  renderer.setBackgroundColor(bgColor);
+
   if (args.animate) {
-    runAnimation(width, height, outMode, args.fps);
+    // Animation loop
+    let t = 0;
+
+    renderer.setFrameCallback(async (deltaTime) => {
+      canvas.frameBuffer.clear(bgColor);
+      renderFrame(t, width, height, canvas.frameBuffer, bg, lighting);
+      t += deltaTime / 1000;
+    });
+
+    renderer.start();
   } else {
-    const frame = renderFrame(args.time, width, height, outMode, bg, lighting);
-    console.log(frame);
+    // Single frame
+    canvas.frameBuffer.clear(bgColor);
+    renderFrame(args.time, width, height, canvas.frameBuffer, bg, lighting);
+    
+    // Wait for render to complete then exit
+    await renderer.idle();
+    
+    // Small delay to ensure output is flushed
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    renderer.destroy();
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
