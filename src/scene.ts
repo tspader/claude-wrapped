@@ -88,10 +88,9 @@ export const config = {
 
 export type Config = typeof config;
 
-// =============================================================================
-// Scene State (persistent across frames)
-// =============================================================================
-
+///////////
+// TOOLS //
+///////////
 // Seeded random number generator
 function seededRandom(seed: number) {
   return () => {
@@ -99,6 +98,39 @@ function seededRandom(seed: number) {
     return seed / 0x7fffffff;
   };
 }
+
+// Simplex noise
+const noise2D = createNoise2D(() => sceneState.rng());
+
+function pnoise1(x: number, octaves: number = 1): number {
+  let value = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  let maxValue = 0;
+
+  for (let i = 0; i < octaves; i++) {
+    value += noise2D(x * frequency, 0) * amplitude;
+    maxValue += amplitude;
+    amplitude *= 0.5;
+    frequency *= 2;
+  }
+
+  return value / maxValue;
+}
+
+// Easing functions
+function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function easeOutQuad(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
+
+
+// =============================================================================
+// Scene State (persistent across frames)
+// =============================================================================
 
 interface SceneState {
   basePositions: Vec3[];
@@ -148,14 +180,6 @@ function initSceneState(cfg: typeof config.scene): SceneState {
 
 const sceneState = initSceneState(config.scene);
 
-// Easing functions
-function easeInOutQuad(t: number): number {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-}
-
-function easeOutQuad(t: number): number {
-  return 1 - (1 - t) * (1 - t);
-}
 
 // Compute red ball position based on slingshot animation
 export function getRedBallPosition(t: number): Vec3 {
@@ -200,25 +224,6 @@ export function getRedBallPosition(t: number): Vec3 {
 
     return [x, y, z];
   }
-}
-
-// Simplex noise
-const noise2D = createNoise2D(() => sceneState.rng());
-
-function pnoise1(x: number, octaves: number = 1): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = 1;
-  let maxValue = 0;
-
-  for (let i = 0; i < octaves; i++) {
-    value += noise2D(x * frequency, 0) * amplitude;
-    maxValue += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
-  }
-
-  return value / maxValue;
 }
 
 // =============================================================================
