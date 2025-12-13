@@ -440,6 +440,88 @@ export class RayMarcher {
     return { hit, positions, distances, steps };
   }
 
+  /**
+   * Batched ray marching using TypedArrays.
+   * sdfBatch evaluates all positions at once: (px, py, pz, out) where each is Float64Array
+   */
+  marchBatched(
+    sdfBatch: (px: Float64Array, py: Float64Array, pz: Float64Array, out: Float64Array) => void,
+    origins: Vec3[],
+    directions: Vec3[]
+  ): {
+    hit: boolean[];
+    positions: Vec3[];
+    distances: number[];
+  } {
+    const n = origins.length;
+    
+    // Flatten origins/directions to typed arrays
+    const ox = new Float64Array(n);
+    const oy = new Float64Array(n);
+    const oz = new Float64Array(n);
+    const dx = new Float64Array(n);
+    const dy = new Float64Array(n);
+    const dz = new Float64Array(n);
+    
+    for (let i = 0; i < n; i++) {
+      ox[i] = origins[i]![0];
+      oy[i] = origins[i]![1];
+      oz[i] = origins[i]![2];
+      dx[i] = directions[i]![0];
+      dy[i] = directions[i]![1];
+      dz[i] = directions[i]![2];
+    }
+    
+    // Current positions
+    const px = new Float64Array(ox);
+    const py = new Float64Array(oy);
+    const pz = new Float64Array(oz);
+    
+    const distances = new Float64Array(n);
+    const sdfOut = new Float64Array(n);
+    const active = new Uint8Array(n).fill(1);
+    
+    for (let step = 0; step < this.maxSteps; step++) {
+      // Batch evaluate SDF at all positions
+      sdfBatch(px, py, pz, sdfOut);
+      
+      let anyActive = false;
+      for (let i = 0; i < n; i++) {
+        if (!active[i]) continue;
+        
+        const d = sdfOut[i]!;
+        const newDist = distances[i]! + d;
+        distances[i] = newDist;
+        
+        // Update position
+        px[i] = ox[i]! + distances[i]! * dx[i]!;
+        py[i] = oy[i]! + distances[i]! * dy[i]!;
+        pz[i] = oz[i]! + distances[i]! * dz[i]!;
+        
+        if (d < this.hitThreshold || distances[i]! > this.maxDist) {
+          active[i] = 0;
+        } else {
+          anyActive = true;
+        }
+      }
+      
+      if (!anyActive) break;
+    }
+    
+    // Convert back to output format
+    const hit: boolean[] = new Array(n);
+    const positions: Vec3[] = new Array(n);
+    const distOut: number[] = new Array(n);
+    
+    for (let i = 0; i < n; i++) {
+      hit[i] = distances[i]! < this.maxDist;
+      positions[i] = [px[i]!, py[i]!, pz[i]!];
+      distOut[i] = distances[i]!;
+    }
+    
+    return { hit, positions, distances: distOut };
+  }
+
   estimateNormals(sdf: (p: Vec3) => number, positions: Vec3[]): Vec3[] {
     const eps = this.normalEps;
     const normals: Vec3[] = [];
@@ -455,6 +537,68 @@ export class RayMarcher {
       normals.push(normalize([nx, ny, nz]));
     }
 
+    return normals;
+  }
+
+  /**
+   * Batched normal estimation
+   */
+  estimateNormalsBatched(
+    sdfBatch: (px: Float64Array, py: Float64Array, pz: Float64Array, out: Float64Array) => void,
+    positions: Vec3[]
+  ): Vec3[] {
+    const n = positions.length;
+    const eps = this.normalEps;
+    
+    const px = new Float64Array(n);
+    const py = new Float64Array(n);
+    const pz = new Float64Array(n);
+    
+    for (let i = 0; i < n; i++) {
+      px[i] = positions[i]![0];
+      py[i] = positions[i]![1];
+      pz[i] = positions[i]![2];
+    }
+    
+    // We need 6 SDF evaluations per point, but we can batch all n points per offset
+    const pxPlus = new Float64Array(n);
+    const pxMinus = new Float64Array(n);
+    const pyPlus = new Float64Array(n);
+    const pyMinus = new Float64Array(n);
+    const pzPlus = new Float64Array(n);
+    const pzMinus = new Float64Array(n);
+    
+    for (let i = 0; i < n; i++) {
+      pxPlus[i] = px[i]! + eps;
+      pxMinus[i] = px[i]! - eps;
+      pyPlus[i] = py[i]! + eps;
+      pyMinus[i] = py[i]! - eps;
+      pzPlus[i] = pz[i]! + eps;
+      pzMinus[i] = pz[i]! - eps;
+    }
+    
+    const outXPlus = new Float64Array(n);
+    const outXMinus = new Float64Array(n);
+    const outYPlus = new Float64Array(n);
+    const outYMinus = new Float64Array(n);
+    const outZPlus = new Float64Array(n);
+    const outZMinus = new Float64Array(n);
+    
+    sdfBatch(pxPlus, py, pz, outXPlus);
+    sdfBatch(pxMinus, py, pz, outXMinus);
+    sdfBatch(px, pyPlus, pz, outYPlus);
+    sdfBatch(px, pyMinus, pz, outYMinus);
+    sdfBatch(px, py, pzPlus, outZPlus);
+    sdfBatch(px, py, pzMinus, outZMinus);
+    
+    const normals: Vec3[] = new Array(n);
+    for (let i = 0; i < n; i++) {
+      const nx = outXPlus[i]! - outXMinus[i]!;
+      const ny = outYPlus[i]! - outYMinus[i]!;
+      const nz = outZPlus[i]! - outZMinus[i]!;
+      normals[i] = normalize([nx, ny, nz]);
+    }
+    
     return normals;
   }
 }

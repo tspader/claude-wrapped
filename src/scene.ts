@@ -12,9 +12,9 @@ import { primitives } from "./renderer";
 
 export const config = {
   rayMarcher: {
-    maxSteps: 64,
+    maxSteps: 32,
     maxDist: 100.0,
-    hitThreshold: 0.001,
+    hitThreshold: 0.01,
     normalEps: 0.001,
   },
   camera: {
@@ -24,8 +24,8 @@ export const config = {
     fov: 50,
   },
   render: {
-    width: 127,
-    height: 60,
+    width: process.stdout.columns,
+    height: process.stdout.rows,
     output: "ascii" as "ascii" | "unicode" | "truecolor",
     background: [0.0, 0.0, 0.0] as Vec3,
   },
@@ -159,5 +159,102 @@ export function makeScene(
   return {
     scene: [[combined, color]],
     overrides: { camera: { fov: 50 } },
+  };
+}
+
+/**
+ * Batched scene: returns sphere positions/radii and a batch SDF evaluator.
+ * The batch evaluator processes all points at once using typed arrays.
+ */
+export interface BatchedScene {
+  color: Vec3;
+  /** Evaluate SDF for all points, writes min distance to out */
+  sdfBatch: (px: Float64Array, py: Float64Array, pz: Float64Array, out: Float64Array) => void;
+}
+
+export function makeSceneBatched(t: number): BatchedScene {
+  const driftSpeed = 0.5;
+  const driftScale = 10.0;
+  const sizeOscSpeed = 0.8;
+  const sizeOscAmount = 0.15;
+  const noiseSizeAmount = 0.1;
+
+  // Compute sphere centers and radii for this frame
+  const centers: Vec3[] = [];
+  const radii: number[] = [];
+
+  for (let i = 0; i < NUM_OBJECTS; i++) {
+    const [bx, by, bz] = basePositions[i]!;
+    const [nx, ny, nz] = noiseOffsets[i]!;
+
+    const dx = pnoise1(nx + t * driftSpeed, 2) * driftScale;
+    const dy = pnoise1(ny + t * driftSpeed, 2) * driftScale * 0.5;
+    const dz = pnoise1(nz + t * driftSpeed, 2) * driftScale;
+
+    centers.push([bx + dx, by + dy, bz + dz]);
+
+    const phase = phaseOffsets[i]!;
+    const freq = freqMultipliers[i]!;
+    const osc = Math.sin(t * sizeOscSpeed * freq + phase) * sizeOscAmount;
+    const noiseSize = pnoise1(nx + t * 0.5, 1) * noiseSizeAmount;
+    radii.push(Math.max(0.1, baseSizes[i]! + osc + noiseSize));
+  }
+
+  // Flatten for faster access
+  const cx = new Float64Array(NUM_OBJECTS);
+  const cy = new Float64Array(NUM_OBJECTS);
+  const cz = new Float64Array(NUM_OBJECTS);
+  const r = new Float64Array(NUM_OBJECTS);
+  
+  for (let i = 0; i < NUM_OBJECTS; i++) {
+    cx[i] = centers[i]![0];
+    cy[i] = centers[i]![1];
+    cz[i] = centers[i]![2];
+    r[i] = radii[i]!;
+  }
+
+  const k = SMOOTH_K;
+
+  // Batch SDF: smooth union of all spheres
+  function sdfBatch(
+    px: Float64Array,
+    py: Float64Array,
+    pz: Float64Array,
+    out: Float64Array
+  ): void {
+    const n = px.length;
+    
+    // First sphere - initialize out with its distances
+    {
+      const sx = cx[0]!, sy = cy[0]!, sz = cz[0]!, sr = r[0]!;
+      for (let i = 0; i < n; i++) {
+        const dx = px[i]! - sx;
+        const dy = py[i]! - sy;
+        const dz = pz[i]! - sz;
+        out[i] = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
+      }
+    }
+    
+    // Remaining spheres - smooth union with accumulated result
+    for (let s = 1; s < NUM_OBJECTS; s++) {
+      const sx = cx[s]!, sy = cy[s]!, sz = cz[s]!, sr = r[s]!;
+      
+      for (let i = 0; i < n; i++) {
+        const dx = px[i]! - sx;
+        const dy = py[i]! - sy;
+        const dz = pz[i]! - sz;
+        const d2 = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
+        
+        // Smooth union: d1 is out[i], d2 is new sphere
+        const d1 = out[i]!;
+        const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (d2 - d1) / k));
+        out[i] = d2 + (d1 - d2) * h - k * h * (1 - h);
+      }
+    }
+  }
+
+  return {
+    color: [0.9, 0.9, 0.9],
+    sdfBatch,
   };
 }

@@ -299,11 +299,13 @@ function runAnimation(
     const lighting = config.lighting;
 
     const frame = renderFrame(t, w, h, outMode, bg, lighting);
-    process.stdout.write(`\x1b[H${frame}`);
+    const elapsed = performance.now() - start;
+    const actualFps = 1000 / elapsed;
+    const status = `\x1b[0m ${elapsed.toFixed(1)}ms | ${actualFps.toFixed(1)} fps | ${w}x${h}`;
+    process.stdout.write(`\x1b[H${frame}\n${status}`);
 
     t += frameTime / 1000;
 
-    const elapsed = performance.now() - start;
     const sleepTime = frameTime - elapsed;
 
     if (sleepTime > 0) {
