@@ -45,6 +45,45 @@ export const config = {
       },
     ],
   },
+  scene: {
+    seed: 42,
+    smoothK: 2.0,
+    colorBlendK: 0.5,
+
+    columns: {
+      x: 8.0,
+      spacingY: 3.5,
+      spheresPerColumn: 4,
+      sphereRadius: 1.8,
+    },
+
+    animation: {
+      driftSpeed: 0.125,
+      driftScale: 1.0,
+      sizeOscSpeed: 0.8,
+      sizeOscAmount: 0.15,
+      noiseSizeAmount: 0.1,
+    },
+
+    colors: {
+      blob: [0.388, 0.627, 0.533] as Vec3,
+      redBall: [180 / 255, 101 / 255, 111 / 255] as Vec3,
+    },
+
+    redBall: {
+      radiusRatio: 1 / 8,
+      z: -1,
+      noiseScale: 0.3,
+      slingshot: {
+        cycleDuration: 8.0,
+        windupRatio: 0.25,
+        restY: 0,
+        launchOffsetX: 2.0,
+        launchOffsetY: -1.0,
+        peakY: 1.0,
+      },
+    },
+  },
 };
 
 export type Config = typeof config;
@@ -52,16 +91,6 @@ export type Config = typeof config;
 // =============================================================================
 // Scene State (persistent across frames)
 // =============================================================================
-
-const SEED = 42;
-const SMOOTH_K = 2.0;
-
-// Two-column layout: left and right thirds of screen, middle empty
-// Layout: | .25 padding | .25 spheres | .33 empty | .25 spheres | .17 padding |
-const COLUMN_X = 8.0;        // X position of columns (left at -X, right at +X)
-const COLUMN_SPACING_Y = 3.5; // Vertical spacing between spheres
-const SPHERES_PER_COLUMN = 4;
-const SPHERE_RADIUS = 1.8;
 
 // Seeded random number generator
 function seededRandom(seed: number) {
@@ -71,62 +100,53 @@ function seededRandom(seed: number) {
   };
 }
 
-const rng = seededRandom(SEED);
-
-const basePositions: Vec3[] = [];
-const baseSizes: number[] = [];
-const phaseOffsets: number[] = [];
-const freqMultipliers: number[] = [];
-const noiseOffsets: Vec3[] = [];
-
-// Generate two columns of spheres
-const columnYStart = -((SPHERES_PER_COLUMN - 1) / 2) * COLUMN_SPACING_Y;
-
-// Left column
-for (let i = 0; i < SPHERES_PER_COLUMN; i++) {
-  const px = -COLUMN_X;
-  const py = columnYStart + i * COLUMN_SPACING_Y;
-  const pz = 0;
-
-  basePositions.push([px, py, pz]);
-  baseSizes.push(SPHERE_RADIUS);
-  phaseOffsets.push(rng() * 2 * Math.PI);
-  freqMultipliers.push(rng() * 0.5 + 0.75);
-  noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
+interface SceneState {
+  basePositions: Vec3[];
+  baseSizes: number[];
+  phaseOffsets: number[];
+  freqMultipliers: number[];
+  noiseOffsets: Vec3[];
+  redBallNoiseOffset: Vec3;
+  redBallRadius: number;
+  rng: () => number;
 }
 
-// Right column
-for (let i = 0; i < SPHERES_PER_COLUMN; i++) {
-  const px = COLUMN_X;
-  const py = columnYStart + i * COLUMN_SPACING_Y;
-  const pz = 0;
+function initSceneState(cfg: typeof config.scene): SceneState {
+  const rng = seededRandom(cfg.seed);
+  const { x: columnX, spacingY, spheresPerColumn, sphereRadius } = cfg.columns;
 
-  basePositions.push([px, py, pz]);
-  baseSizes.push(SPHERE_RADIUS);
-  phaseOffsets.push(rng() * 2 * Math.PI);
-  freqMultipliers.push(rng() * 0.5 + 0.75);
-  noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
+  const basePositions: Vec3[] = [];
+  const baseSizes: number[] = [];
+  const phaseOffsets: number[] = [];
+  const freqMultipliers: number[] = [];
+  const noiseOffsets: Vec3[] = [];
+
+  const columnYStart = -((spheresPerColumn - 1) / 2) * spacingY;
+
+  // Generate both columns (left at -X, right at +X)
+  for (const sign of [-1, 1]) {
+    for (let i = 0; i < spheresPerColumn; i++) {
+      basePositions.push([sign * columnX, columnYStart + i * spacingY, 0]);
+      baseSizes.push(sphereRadius);
+      phaseOffsets.push(rng() * 2 * Math.PI);
+      freqMultipliers.push(rng() * 0.5 + 0.75);
+      noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
+    }
+  }
+
+  return {
+    basePositions,
+    baseSizes,
+    phaseOffsets,
+    freqMultipliers,
+    noiseOffsets,
+    redBallNoiseOffset: [rng() * 1000, rng() * 1000, rng() * 1000],
+    redBallRadius: sphereRadius * cfg.redBall.radiusRatio,
+    rng,
+  };
 }
 
-const NUM_OBJECTS = basePositions.length;
-
-// =============================================================================
-// Red Ball (separate from main blob)
-// =============================================================================
-
-const RED_BALL_COLOR: Vec3 = [180 / 255, 101 / 255, 111 / 255]; // indian_red
-const redBallRadius = SPHERE_RADIUS / 8;
-const redBallNoiseOffset: Vec3 = [rng() * 1000, rng() * 1000, rng() * 1000];
-
-// Slingshot animation parameters
-const SLINGSHOT_CYCLE_DURATION = 8.0; // seconds for full cycle
-const SLINGSHOT_WINDUP_RATIO = 0.25;  // portion of cycle for windup
-const SLINGSHOT_FLIGHT_RATIO = 0.75;  // portion of cycle for flight
-const SLINGSHOT_REST_Y = 0;           // ball's rest Y position
-const SLINGSHOT_LAUNCH_OFFSET_X = 2.0; // how far to pull back on X (towards edge)
-const SLINGSHOT_LAUNCH_OFFSET_Y = -2.0; // how far down during windup
-const SLINGSHOT_PEAK_Y = 2.0;         // peak height during flight
-const SLINGSHOT_Z = -1;               // Z position
+const sceneState = initSceneState(config.scene);
 
 // Easing functions
 function easeInOutQuad(t: number): number {
@@ -137,32 +157,32 @@ function easeOutQuad(t: number): number {
   return 1 - (1 - t) * (1 - t);
 }
 
-function easeInQuad(t: number): number {
-  return t * t;
-}
-
 // Compute red ball position based on slingshot animation
-function getRedBallPosition(t: number): Vec3 {
-  const cycleTime = t % SLINGSHOT_CYCLE_DURATION;
-  const windupDuration = SLINGSHOT_CYCLE_DURATION * SLINGSHOT_WINDUP_RATIO;
-  const flightDuration = SLINGSHOT_CYCLE_DURATION * SLINGSHOT_FLIGHT_RATIO;
+export function getRedBallPosition(t: number): Vec3 {
+  const { slingshot, z } = config.scene.redBall;
+  const { cycleDuration, windupRatio, restY, launchOffsetX, launchOffsetY, peakY } = slingshot;
+  const columnX = config.scene.columns.x;
+
+  const cycleTime = t % cycleDuration;
+  const windupDuration = cycleDuration * windupRatio;
+  const flightDuration = cycleDuration * (1 - windupRatio);
 
   // Determine which side we're on (alternates each cycle)
-  const cycleIndex = Math.floor(t / SLINGSHOT_CYCLE_DURATION);
-  const startX = cycleIndex % 2 === 0 ? COLUMN_X : -COLUMN_X;
-  const targetX = -startX; // mirror on X axis
+  const cycleIndex = Math.floor(t / cycleDuration);
+  const startX = cycleIndex % 2 === 0 ? columnX : -columnX;
+  const targetX = -startX;
 
   // Launch position: pulled back towards edge and down
-  const launchX = startX + (startX > 0 ? SLINGSHOT_LAUNCH_OFFSET_X : -SLINGSHOT_LAUNCH_OFFSET_X);
-  const launchY = SLINGSHOT_REST_Y + SLINGSHOT_LAUNCH_OFFSET_Y;
+  const launchX = startX + (startX > 0 ? launchOffsetX : -launchOffsetX);
+  const launchY = restY + launchOffsetY;
 
   if (cycleTime < windupDuration) {
     // Windup phase: ease from rest to launch position
     const windupT = easeInOutQuad(cycleTime / windupDuration);
     return [
       startX + (launchX - startX) * windupT,
-      SLINGSHOT_REST_Y + (launchY - SLINGSHOT_REST_Y) * windupT,
-      SLINGSHOT_Z,
+      restY + (launchY - restY) * windupT,
+      z,
     ];
   } else {
     // Flight phase
@@ -170,27 +190,20 @@ function getRedBallPosition(t: number): Vec3 {
     const flightT = flightTime / flightDuration;
 
     // X: easeOut from launch to target
-    const x = launchX + (targetX - launchX) * easeOutQuad(flightT);
+    const easedT = easeOutQuad(flightT);
+    const x = launchX + (targetX - launchX) * easedT;
 
-    // Y: parabolic arc - launch -> peak -> target
-    // Use a combination: rise with easeOut, fall with easeIn
-    let y: number;
-    if (flightT < 0.5) {
-      // Rising: launch -> peak
-      const riseT = easeOutQuad(flightT * 2);
-      y = launchY + (SLINGSHOT_PEAK_Y - launchY) * riseT;
-    } else {
-      // Falling: peak -> rest
-      const fallT = easeInQuad((flightT - 0.5) * 2);
-      y = SLINGSHOT_PEAK_Y + (SLINGSHOT_REST_Y - SLINGSHOT_PEAK_Y) * fallT;
-    }
+    // Y: parabola synced with X movement
+    const peakOffset = peakY - launchY;
+    const parabola = 4 * easedT * (1 - easedT);
+    const y = launchY + peakOffset * parabola + (restY - launchY) * easedT;
 
-    return [x, y, SLINGSHOT_Z];
+    return [x, y, z];
   }
 }
 
 // Simplex noise
-const noise2D = createNoise2D(() => rng());
+const noise2D = createNoise2D(() => sceneState.rng());
 
 function pnoise1(x: number, octaves: number = 1): number {
   let value = 0;
@@ -229,16 +242,21 @@ export function makeScene(
   prims: typeof primitives
 ): SceneResult {
   const { sphere, smoothUnion } = prims;
-
-  const driftSpeed = 0.125;
-  const driftScale = 1.0;
-  const sizeOscSpeed = 0.8;
-  const sizeOscAmount = 0.15;
-  const noiseSizeAmount = 0.1;
+  const { animation, colors, smoothK, colorBlendK, redBall: redBallCfg } = config.scene;
+  const { driftSpeed, driftScale, sizeOscSpeed, sizeOscAmount, noiseSizeAmount } = animation;
+  const {
+    basePositions,
+    baseSizes,
+    phaseOffsets,
+    freqMultipliers,
+    noiseOffsets,
+    redBallNoiseOffset,
+    redBallRadius,
+  } = sceneState;
 
   const shapes: SDF[] = [];
 
-  for (let i = 0; i < NUM_OBJECTS; i++) {
+  for (let i = 0; i < basePositions.length; i++) {
     const [bx, by, bz] = basePositions[i]!;
     const [nx, ny, nz] = noiseOffsets[i]!;
 
@@ -259,21 +277,18 @@ export function makeScene(
 
   let combined = shapes[0]!;
   for (let i = 1; i < shapes.length; i++) {
-    combined = smoothUnion(combined, shapes[i]!, SMOOTH_K);
+    combined = smoothUnion(combined, shapes[i]!, smoothK);
   }
-
-
-  const color: Vec3 = [0.388, 0.627, 0.533];
 
   // Red ball with slingshot animation + noise sway
   const redBallBasePos = getRedBallPosition(t);
   const [rbx, rby, rbz] = redBallBasePos;
   const [rnx, rny, rnz] = redBallNoiseOffset;
 
-  // Add subtle noise on top of the slingshot animation
-  const rbDx = pnoise1(rnx + t * driftSpeed, 2) * driftScale * 0.3;
-  const rbDy = pnoise1(rny + t * driftSpeed, 2) * driftScale * 0.2;
-  const rbDz = pnoise1(rnz + t * driftSpeed, 2) * driftScale * 0.3;
+  const noiseScale = redBallCfg.noiseScale;
+  const rbDx = pnoise1(rnx + t * driftSpeed, 2) * driftScale * noiseScale;
+  const rbDy = pnoise1(rny + t * driftSpeed, 2) * driftScale * noiseScale * 0.67;
+  const rbDz = pnoise1(rnz + t * driftSpeed, 2) * driftScale * noiseScale;
 
   const redBallPos: Vec3 = [rbx + rbDx, rby + rbDy, rbz + rbDz];
   const redBallSize = Math.max(0.1, redBallRadius);
@@ -281,112 +296,17 @@ export function makeScene(
 
   // Keep green blob separate for color lookup, merge everything for marching
   const greenBlob = combined;
-  const fullMerged = smoothUnion(greenBlob, redBall, 1.0);
+  const fullMerged = smoothUnion(greenBlob, redBall, smoothK);
 
   return {
     scene: [
-      [greenBlob, color],
-      [redBall, RED_BALL_COLOR],
+      [greenBlob, colors.blob],
+      [redBall, colors.redBall],
     ],
     marchingSdf: fullMerged,
-    colorBlendK: 0.5,
+    colorBlendK,
     overrides: { camera: { fov: 45 } },
   };
 }
 
-/**
- * Batched scene: returns sphere positions/radii and a batch SDF evaluator.
- * The batch evaluator processes all points at once using typed arrays.
- */
-export interface BatchedScene {
-  color: Vec3;
-  /** Evaluate SDF for all points, writes min distance to out */
-  sdfBatch: (px: Float64Array, py: Float64Array, pz: Float64Array, out: Float64Array) => void;
-}
 
-export function makeSceneBatched(t: number): BatchedScene {
-  const driftSpeed = 0.5;
-  const driftScale = 10.0;
-  const sizeOscSpeed = 0.8;
-  const sizeOscAmount = 0.15;
-  const noiseSizeAmount = 0.1;
-
-  // Compute sphere centers and radii for this frame
-  const centers: Vec3[] = [];
-  const radii: number[] = [];
-
-  for (let i = 0; i < NUM_OBJECTS; i++) {
-    const [bx, by, bz] = basePositions[i]!;
-    const [nx, ny, nz] = noiseOffsets[i]!;
-
-    const dx = pnoise1(nx + t * driftSpeed, 2) * driftScale;
-    const dy = pnoise1(ny + t * driftSpeed, 2) * driftScale * 0.5;
-    const dz = pnoise1(nz + t * driftSpeed, 2) * driftScale;
-
-    centers.push([bx + dx, by + dy, bz + dz]);
-
-    const phase = phaseOffsets[i]!;
-    const freq = freqMultipliers[i]!;
-    const osc = Math.sin(t * sizeOscSpeed * freq + phase) * sizeOscAmount;
-    const noiseSize = pnoise1(nx + t * 0.5, 1) * noiseSizeAmount;
-    radii.push(Math.max(0.1, baseSizes[i]! + osc + noiseSize));
-  }
-
-  // Flatten for faster access
-  const cx = new Float64Array(NUM_OBJECTS);
-  const cy = new Float64Array(NUM_OBJECTS);
-  const cz = new Float64Array(NUM_OBJECTS);
-  const r = new Float64Array(NUM_OBJECTS);
-
-  for (let i = 0; i < NUM_OBJECTS; i++) {
-    cx[i] = centers[i]![0];
-    cy[i] = centers[i]![1];
-    cz[i] = centers[i]![2];
-    r[i] = radii[i]!;
-  }
-
-  const k = SMOOTH_K;
-
-  // Batch SDF: smooth union of all spheres
-  function sdfBatch(
-    px: Float64Array,
-    py: Float64Array,
-    pz: Float64Array,
-    out: Float64Array
-  ): void {
-    const n = px.length;
-
-    // First sphere - initialize out with its distances
-    {
-      const sx = cx[0]!, sy = cy[0]!, sz = cz[0]!, sr = r[0]!;
-      for (let i = 0; i < n; i++) {
-        const dx = px[i]! - sx;
-        const dy = py[i]! - sy;
-        const dz = pz[i]! - sz;
-        out[i] = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
-      }
-    }
-
-    // Remaining spheres - smooth union with accumulated result
-    for (let s = 1; s < NUM_OBJECTS; s++) {
-      const sx = cx[s]!, sy = cy[s]!, sz = cz[s]!, sr = r[s]!;
-
-      for (let i = 0; i < n; i++) {
-        const dx = px[i]! - sx;
-        const dy = py[i]! - sy;
-        const dz = pz[i]! - sz;
-        const d2 = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
-
-        // Smooth union: d1 is out[i], d2 is new sphere
-        const d1 = out[i]!;
-        const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (d2 - d1) / k));
-        out[i] = d2 + (d1 - d2) * h - k * h * (1 - h);
-      }
-    }
-  }
-
-  return {
-    color: [0.9, 0.9, 0.9],
-    sdfBatch,
-  };
-}

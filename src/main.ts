@@ -21,7 +21,7 @@ import {
   scale,
   length,
 } from "./renderer";
-import { config, makeScene } from "./scene";
+import { config, makeScene, getRedBallPosition } from "./scene";
 import type { OptimizedBuffer } from "@opentui/core";
 
 // =============================================================================
@@ -272,6 +272,7 @@ function parseArgs(): {
   height: number | null;
   animate: boolean;
   fps: number;
+  debugBall: number | null;
 } {
   const args = process.argv.slice(2);
   const result = {
@@ -280,6 +281,7 @@ function parseArgs(): {
     height: null as number | null,
     animate: false,
     fps: 30,
+    debugBall: null as number | null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -304,6 +306,9 @@ function parseArgs(): {
       case "--fps":
         result.fps = parseInt(args[++i] || "30", 10);
         break;
+      case "--debug-ball":
+        result.debugBall = parseInt(args[++i] || "8", 10);
+        break;
       case "--help":
         console.log(`Usage: bun src/main.ts [options]
 
@@ -313,6 +318,7 @@ Options:
   -h, --height <int>    Height in characters
   -a, --animate         Run animation loop
   --fps <int>           Frames per second (default: 30)
+  --debug-ball <n>      Print ball positions for t=0..n and exit
   --help                Show this help`);
         process.exit(0);
     }
@@ -323,6 +329,17 @@ Options:
 
 async function main(): Promise<void> {
   const args = parseArgs();
+
+  // Debug ball positions mode
+  if (args.debugBall !== null) {
+    console.log("Red ball positions over time:");
+    console.log("t\tx\ty\tz");
+    for (let t = 0; t <= args.debugBall; t += 0.5) {
+      const pos = getRedBallPosition(t);
+      console.log(`${t.toFixed(1)}\t${pos[0].toFixed(2)}\t${pos[1].toFixed(2)}\t${pos[2].toFixed(2)}`);
+    }
+    process.exit(0);
+  }
 
   // Create OpenTUI renderer
   const renderer = await createCliRenderer({
