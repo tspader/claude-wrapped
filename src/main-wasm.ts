@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
-  // Pointers
+  // Ray buffer pointers
   get_bg_ptr: () => number;
   get_ray_ox_ptr: () => number;
   get_ray_oy_ptr: () => number;
@@ -32,9 +32,16 @@ interface WasmExports {
   get_out_r_ptr: () => number;
   get_out_g_ptr: () => number;
   get_out_b_ptr: () => number;
+  // Scene buffer pointers
+  get_shape_types_ptr: () => number;
+  get_shape_params_ptr: () => number;
+  get_shape_positions_ptr: () => number;
+  get_shape_colors_ptr: () => number;
   // Functions
   get_max_rays: () => number;
+  get_max_shapes: () => number;
   set_ray_count: (count: number) => void;
+  set_scene: (count: number, smoothK: number) => void;
   compute_background: (time: number) => void;
   march_rays: () => void;
 }
@@ -42,7 +49,8 @@ interface WasmExports {
 interface WasmRenderer {
   exports: WasmExports;
   maxRays: number;
-  // Buffer views
+  maxShapes: number;
+  // Ray buffer views
   rayOx: Float32Array;
   rayOy: Float32Array;
   rayOz: Float32Array;
@@ -53,6 +61,11 @@ interface WasmRenderer {
   outG: Float32Array;
   outB: Float32Array;
   bgColor: Float32Array;
+  // Scene buffer views
+  shapeTypes: Uint8Array;
+  shapeParams: Float32Array;
+  shapePositions: Float32Array;
+  shapeColors: Float32Array;
 }
 
 async function loadWasm(): Promise<WasmRenderer> {
@@ -64,10 +77,13 @@ async function loadWasm(): Promise<WasmRenderer> {
   const exports = instance.exports as unknown as WasmExports;
   const memory = exports.memory;
   const maxRays = exports.get_max_rays();
+  const maxShapes = exports.get_max_shapes();
 
   return {
     exports,
     maxRays,
+    maxShapes,
+    // Ray buffers
     rayOx: new Float32Array(memory.buffer, exports.get_ray_ox_ptr(), maxRays),
     rayOy: new Float32Array(memory.buffer, exports.get_ray_oy_ptr(), maxRays),
     rayOz: new Float32Array(memory.buffer, exports.get_ray_oz_ptr(), maxRays),
@@ -78,7 +94,59 @@ async function loadWasm(): Promise<WasmRenderer> {
     outG: new Float32Array(memory.buffer, exports.get_out_g_ptr(), maxRays),
     outB: new Float32Array(memory.buffer, exports.get_out_b_ptr(), maxRays),
     bgColor: new Float32Array(memory.buffer, exports.get_bg_ptr(), 3),
+    // Scene buffers
+    shapeTypes: new Uint8Array(memory.buffer, exports.get_shape_types_ptr(), maxShapes),
+    shapeParams: new Float32Array(memory.buffer, exports.get_shape_params_ptr(), maxShapes * 4),
+    shapePositions: new Float32Array(memory.buffer, exports.get_shape_positions_ptr(), maxShapes * 3),
+    shapeColors: new Float32Array(memory.buffer, exports.get_shape_colors_ptr(), maxShapes * 3),
   };
+}
+
+// =============================================================================
+// Shape Types (must match C enum)
+// =============================================================================
+
+const ShapeType = {
+  SPHERE: 0,
+  BOX: 1,
+} as const;
+
+// =============================================================================
+// Test Scene: 3 spheres with different colors
+// =============================================================================
+
+function setTestScene(wasm: WasmRenderer): void {
+  // 3 spheres: red left, green center, blue right
+  const shapes: Array<{
+    type: number;
+    params: [number, number, number, number];
+    pos: Vec3;
+    color: Vec3;
+  }> = [
+    { type: ShapeType.SPHERE, params: [1.0, 0, 0, 0], pos: [-2.5, 0, 0], color: [0.8, 0.2, 0.2] },
+    { type: ShapeType.SPHERE, params: [1.2, 0, 0, 0], pos: [0, 0, 0], color: [0.2, 0.8, 0.3] },
+    { type: ShapeType.SPHERE, params: [1.0, 0, 0, 0], pos: [2.5, 0, 0], color: [0.2, 0.3, 0.8] },
+  ];
+
+  for (let i = 0; i < shapes.length; i++) {
+    const s = shapes[i]!;
+    wasm.shapeTypes[i] = s.type;
+    // Params: 4 floats per shape
+    wasm.shapeParams[i * 4] = s.params[0];
+    wasm.shapeParams[i * 4 + 1] = s.params[1];
+    wasm.shapeParams[i * 4 + 2] = s.params[2];
+    wasm.shapeParams[i * 4 + 3] = s.params[3];
+    // Position
+    wasm.shapePositions[i * 3] = s.pos[0];
+    wasm.shapePositions[i * 3 + 1] = s.pos[1];
+    wasm.shapePositions[i * 3 + 2] = s.pos[2];
+    // Color
+    wasm.shapeColors[i * 3] = s.color[0];
+    wasm.shapeColors[i * 3 + 1] = s.color[1];
+    wasm.shapeColors[i * 3 + 2] = s.color[2];
+  }
+
+  wasm.exports.set_scene(shapes.length, 0.8); // count, smoothK
 }
 
 // =============================================================================
@@ -100,7 +168,7 @@ function renderFrame(
     return;
   }
 
-  // Generate rays using JS Camera (could move to WASM later)
+  // Generate rays using JS Camera
   const { origins, directions } = camera.generateRays(width, height);
 
   // Copy rays to WASM buffers
@@ -220,7 +288,7 @@ function parseArgs(): {
       case "--help":
         console.log(`Usage: bun src/main-wasm.ts [options]
 
-WASM-based raymarcher (hardcoded two-sphere scene)
+WASM-based raymarcher (dynamic scene test)
 
 Options:
   -t, --time <float>    Time value for scene (default: 0)
@@ -260,9 +328,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Camera config (matches hardcoded scene - looking at two spheres)
+  // Set up test scene (3 colored spheres)
+  setTestScene(wasm);
+
+  // Camera config
   const camera = new Camera({
-    eye: [0, 0, -6],
+    eye: [0, 0, -8],
     at: [0, 0, 0],
     up: [0, 1, 0],
     fov: 50,

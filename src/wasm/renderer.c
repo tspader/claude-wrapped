@@ -1,9 +1,10 @@
-// WASM Raymarcher with SIMD
+// WASM Raymarcher with SIMD and Dynamic Scenes
 // Compile: clang --target=wasm32 -O3 -msimd128 -nostdlib -Wl,--no-entry -Wl,--export-all -o renderer.wasm renderer.c
 
 #include <wasm_simd128.h>
 
 typedef unsigned int u32;
+typedef unsigned char u8;
 typedef int i32;
 typedef float f32;
 
@@ -12,10 +13,15 @@ typedef float f32;
 // =============================================================================
 
 #define MAX_RAYS 16384      // 128x128 max resolution
+#define MAX_SHAPES 64       // max shapes in scene
 #define MAX_STEPS 32
 #define MAX_DIST 100.0f
 #define HIT_THRESHOLD 0.01f
 #define NORMAL_EPS 0.001f
+
+// Shape types
+#define SHAPE_SPHERE 0
+#define SHAPE_BOX 1
 
 // =============================================================================
 // Buffers (static allocation - no malloc in WASM without libc)
@@ -37,6 +43,14 @@ static f32 out_b[MAX_RAYS];
 // Background color
 static f32 bg_color[3];
 
+// Scene data
+static u8 shape_types[MAX_SHAPES];           // SHAPE_SPHERE, SHAPE_BOX
+static f32 shape_params[MAX_SHAPES * 4];     // [radius] or [w,h,d,_] per shape
+static f32 shape_positions[MAX_SHAPES * 3];  // x,y,z per shape
+static f32 shape_colors[MAX_SHAPES * 3];     // r,g,b per shape
+static u32 shape_count = 0;
+static f32 smooth_k = 0.5f;
+
 // Current ray count
 static u32 ray_count = 0;
 
@@ -45,7 +59,6 @@ static u32 ray_count = 0;
 // =============================================================================
 
 static f32 sqrtf_approx(f32 x) {
-    // Newton-Raphson iteration
     if (x <= 0.0f) return 0.0f;
     f32 guess = x * 0.5f;
     for (int i = 0; i < 5; i++) {
@@ -72,17 +85,17 @@ static f32 clampf(f32 x, f32 lo, f32 hi) { return minf(maxf(x, lo), hi); }
 static f32 absf(f32 x) { return x < 0 ? -x : x; }
 
 // =============================================================================
-// SDF Primitives (scalar versions for normal estimation)
+// SDF Primitives (scalar)
 // =============================================================================
 
-static f32 sdf_sphere(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 r) {
+static f32 sdf_sphere_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 r) {
     f32 dx = px - cx;
     f32 dy = py - cy;
     f32 dz = pz - cz;
     return sqrtf_approx(dx*dx + dy*dy + dz*dz) - r;
 }
 
-static f32 sdf_box(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 bx, f32 by, f32 bz) {
+static f32 sdf_box_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 bx, f32 by, f32 bz) {
     f32 dx = absf(px - cx) - bx;
     f32 dy = absf(py - cy) - by;
     f32 dz = absf(pz - cz) - bz;
@@ -94,95 +107,196 @@ static f32 sdf_box(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 bx, f32 b
     return outside + inside;
 }
 
-// Smooth union
 static f32 sdf_smooth_union(f32 d1, f32 d2, f32 k) {
     f32 h = clampf(0.5f + 0.5f * (d2 - d1) / k, 0.0f, 1.0f);
     return d2 + (d1 - d2) * h - k * h * (1.0f - h);
 }
 
 // =============================================================================
-// Hardcoded Scene: Two spheres with smooth union
+// Dynamic Scene SDF (scalar - for normal estimation)
 // =============================================================================
 
-// Scene: sphere at (-1.5, 0, 0) r=1.2, sphere at (1.5, 0, 0) r=1.2
-// Color: green-ish (0.4, 0.6, 0.5)
-#define SPHERE1_X -1.5f
-#define SPHERE1_Y 0.0f
-#define SPHERE1_Z 0.0f
-#define SPHERE1_R 1.2f
-
-#define SPHERE2_X 1.5f
-#define SPHERE2_Y 0.0f
-#define SPHERE2_Z 0.0f
-#define SPHERE2_R 1.2f
-
-#define SMOOTH_K 0.8f
-
-#define SCENE_COLOR_R 0.4f
-#define SCENE_COLOR_G 0.6f
-#define SCENE_COLOR_B 0.5f
-
-static f32 scene_sdf(f32 px, f32 py, f32 pz) {
-    f32 d1 = sdf_sphere(px, py, pz, SPHERE1_X, SPHERE1_Y, SPHERE1_Z, SPHERE1_R);
-    f32 d2 = sdf_sphere(px, py, pz, SPHERE2_X, SPHERE2_Y, SPHERE2_Z, SPHERE2_R);
-    return sdf_smooth_union(d1, d2, SMOOTH_K);
+static f32 scene_sdf_scalar(f32 px, f32 py, f32 pz) {
+    if (shape_count == 0) return MAX_DIST;
+    
+    // Evaluate first shape
+    f32 result;
+    u8 type0 = shape_types[0];
+    f32 cx0 = shape_positions[0];
+    f32 cy0 = shape_positions[1];
+    f32 cz0 = shape_positions[2];
+    
+    if (type0 == SHAPE_SPHERE) {
+        f32 r = shape_params[0];
+        result = sdf_sphere_scalar(px, py, pz, cx0, cy0, cz0, r);
+    } else {
+        f32 bx = shape_params[0];
+        f32 by = shape_params[1];
+        f32 bz = shape_params[2];
+        result = sdf_box_scalar(px, py, pz, cx0, cy0, cz0, bx, by, bz);
+    }
+    
+    // Smooth union with remaining shapes
+    for (u32 i = 1; i < shape_count; i++) {
+        u8 type = shape_types[i];
+        f32 cx = shape_positions[i * 3];
+        f32 cy = shape_positions[i * 3 + 1];
+        f32 cz = shape_positions[i * 3 + 2];
+        
+        f32 d;
+        if (type == SHAPE_SPHERE) {
+            f32 r = shape_params[i * 4];
+            d = sdf_sphere_scalar(px, py, pz, cx, cy, cz, r);
+        } else {
+            f32 bx = shape_params[i * 4];
+            f32 by = shape_params[i * 4 + 1];
+            f32 bz = shape_params[i * 4 + 2];
+            d = sdf_box_scalar(px, py, pz, cx, cy, cz, bx, by, bz);
+        }
+        
+        result = sdf_smooth_union(result, d, smooth_k);
+    }
+    
+    return result;
 }
 
 // =============================================================================
-// SIMD Scene SDF (4 points at once)
+// SIMD SDF Primitives
 // =============================================================================
 
-static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
-    // Sphere 1
-    v128_t s1x = wasm_f32x4_splat(SPHERE1_X);
-    v128_t s1y = wasm_f32x4_splat(SPHERE1_Y);
-    v128_t s1z = wasm_f32x4_splat(SPHERE1_Z);
-    v128_t s1r = wasm_f32x4_splat(SPHERE1_R);
+static v128_t sdf_sphere_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy, v128_t cz, v128_t r) {
+    v128_t dx = wasm_f32x4_sub(px, cx);
+    v128_t dy = wasm_f32x4_sub(py, cy);
+    v128_t dz = wasm_f32x4_sub(pz, cz);
+    v128_t len_sq = wasm_f32x4_add(wasm_f32x4_add(
+        wasm_f32x4_mul(dx, dx),
+        wasm_f32x4_mul(dy, dy)),
+        wasm_f32x4_mul(dz, dz));
+    return wasm_f32x4_sub(wasm_f32x4_sqrt(len_sq), r);
+}
+
+static v128_t sdf_box_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy, v128_t cz, v128_t bx, v128_t by, v128_t bz) {
+    v128_t dx = wasm_f32x4_sub(wasm_f32x4_abs(wasm_f32x4_sub(px, cx)), bx);
+    v128_t dy = wasm_f32x4_sub(wasm_f32x4_abs(wasm_f32x4_sub(py, cy)), by);
+    v128_t dz = wasm_f32x4_sub(wasm_f32x4_abs(wasm_f32x4_sub(pz, cz)), bz);
     
-    v128_t dx1 = wasm_f32x4_sub(px, s1x);
-    v128_t dy1 = wasm_f32x4_sub(py, s1y);
-    v128_t dz1 = wasm_f32x4_sub(pz, s1z);
-    v128_t len1_sq = wasm_f32x4_add(wasm_f32x4_add(
-        wasm_f32x4_mul(dx1, dx1),
-        wasm_f32x4_mul(dy1, dy1)),
-        wasm_f32x4_mul(dz1, dz1));
-    v128_t d1 = wasm_f32x4_sub(wasm_f32x4_sqrt(len1_sq), s1r);
+    v128_t zero = wasm_f32x4_splat(0.0f);
+    v128_t dx_pos = wasm_f32x4_max(dx, zero);
+    v128_t dy_pos = wasm_f32x4_max(dy, zero);
+    v128_t dz_pos = wasm_f32x4_max(dz, zero);
     
-    // Sphere 2
-    v128_t s2x = wasm_f32x4_splat(SPHERE2_X);
-    v128_t s2y = wasm_f32x4_splat(SPHERE2_Y);
-    v128_t s2z = wasm_f32x4_splat(SPHERE2_Z);
-    v128_t s2r = wasm_f32x4_splat(SPHERE2_R);
+    v128_t outside = wasm_f32x4_sqrt(wasm_f32x4_add(wasm_f32x4_add(
+        wasm_f32x4_mul(dx_pos, dx_pos),
+        wasm_f32x4_mul(dy_pos, dy_pos)),
+        wasm_f32x4_mul(dz_pos, dz_pos)));
     
-    v128_t dx2 = wasm_f32x4_sub(px, s2x);
-    v128_t dy2 = wasm_f32x4_sub(py, s2y);
-    v128_t dz2 = wasm_f32x4_sub(pz, s2z);
-    v128_t len2_sq = wasm_f32x4_add(wasm_f32x4_add(
-        wasm_f32x4_mul(dx2, dx2),
-        wasm_f32x4_mul(dy2, dy2)),
-        wasm_f32x4_mul(dz2, dz2));
-    v128_t d2 = wasm_f32x4_sub(wasm_f32x4_sqrt(len2_sq), s2r);
+    v128_t inside = wasm_f32x4_min(wasm_f32x4_max(dx, wasm_f32x4_max(dy, dz)), zero);
     
-    // Smooth union
-    v128_t k = wasm_f32x4_splat(SMOOTH_K);
+    return wasm_f32x4_add(outside, inside);
+}
+
+static v128_t sdf_smooth_union_simd(v128_t d1, v128_t d2, v128_t k) {
     v128_t half = wasm_f32x4_splat(0.5f);
     v128_t one = wasm_f32x4_splat(1.0f);
     v128_t zero = wasm_f32x4_splat(0.0f);
     
-    // h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0, 1)
     v128_t diff = wasm_f32x4_sub(d2, d1);
     v128_t h = wasm_f32x4_add(half, wasm_f32x4_mul(half, wasm_f32x4_div(diff, k)));
     h = wasm_f32x4_max(zero, wasm_f32x4_min(one, h));
     
-    // result = d2 + (d1 - d2) * h - k * h * (1 - h)
-    v128_t result = wasm_f32x4_add(d2,
+    return wasm_f32x4_add(d2,
         wasm_f32x4_sub(
             wasm_f32x4_mul(wasm_f32x4_sub(d1, d2), h),
             wasm_f32x4_mul(k, wasm_f32x4_mul(h, wasm_f32x4_sub(one, h)))
         )
     );
+}
+
+// =============================================================================
+// Dynamic Scene SDF (SIMD - 4 points at once)
+// =============================================================================
+
+static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
+    if (shape_count == 0) return wasm_f32x4_splat(MAX_DIST);
+    
+    v128_t k = wasm_f32x4_splat(smooth_k);
+    
+    // Evaluate first shape
+    v128_t result;
+    u8 type0 = shape_types[0];
+    v128_t cx0 = wasm_f32x4_splat(shape_positions[0]);
+    v128_t cy0 = wasm_f32x4_splat(shape_positions[1]);
+    v128_t cz0 = wasm_f32x4_splat(shape_positions[2]);
+    
+    if (type0 == SHAPE_SPHERE) {
+        v128_t r = wasm_f32x4_splat(shape_params[0]);
+        result = sdf_sphere_simd(px, py, pz, cx0, cy0, cz0, r);
+    } else {
+        v128_t bx = wasm_f32x4_splat(shape_params[0]);
+        v128_t by = wasm_f32x4_splat(shape_params[1]);
+        v128_t bz = wasm_f32x4_splat(shape_params[2]);
+        result = sdf_box_simd(px, py, pz, cx0, cy0, cz0, bx, by, bz);
+    }
+    
+    // Smooth union with remaining shapes
+    for (u32 i = 1; i < shape_count; i++) {
+        u8 type = shape_types[i];
+        v128_t cx = wasm_f32x4_splat(shape_positions[i * 3]);
+        v128_t cy = wasm_f32x4_splat(shape_positions[i * 3 + 1]);
+        v128_t cz = wasm_f32x4_splat(shape_positions[i * 3 + 2]);
+        
+        v128_t d;
+        if (type == SHAPE_SPHERE) {
+            v128_t r = wasm_f32x4_splat(shape_params[i * 4]);
+            d = sdf_sphere_simd(px, py, pz, cx, cy, cz, r);
+        } else {
+            v128_t bx = wasm_f32x4_splat(shape_params[i * 4]);
+            v128_t by = wasm_f32x4_splat(shape_params[i * 4 + 1]);
+            v128_t bz = wasm_f32x4_splat(shape_params[i * 4 + 2]);
+            d = sdf_box_simd(px, py, pz, cx, cy, cz, bx, by, bz);
+        }
+        
+        result = sdf_smooth_union_simd(result, d, k);
+    }
     
     return result;
+}
+
+// =============================================================================
+// Color blending (find closest shape for color)
+// =============================================================================
+
+static void get_hit_color(f32 px, f32 py, f32 pz, f32* r, f32* g, f32* b) {
+    // Find closest shape for color
+    f32 min_dist = MAX_DIST;
+    u32 closest = 0;
+    
+    for (u32 i = 0; i < shape_count; i++) {
+        u8 type = shape_types[i];
+        f32 cx = shape_positions[i * 3];
+        f32 cy = shape_positions[i * 3 + 1];
+        f32 cz = shape_positions[i * 3 + 2];
+        
+        f32 d;
+        if (type == SHAPE_SPHERE) {
+            f32 radius = shape_params[i * 4];
+            d = sdf_sphere_scalar(px, py, pz, cx, cy, cz, radius);
+        } else {
+            f32 bx = shape_params[i * 4];
+            f32 by = shape_params[i * 4 + 1];
+            f32 bz = shape_params[i * 4 + 2];
+            d = sdf_box_scalar(px, py, pz, cx, cy, cz, bx, by, bz);
+        }
+        
+        if (d < min_dist) {
+            min_dist = d;
+            closest = i;
+        }
+    }
+    
+    *r = shape_colors[closest * 3];
+    *g = shape_colors[closest * 3 + 1];
+    *b = shape_colors[closest * 3 + 2];
 }
 
 // =============================================================================
@@ -200,9 +314,22 @@ f32* get_out_r_ptr(void) { return out_r; }
 f32* get_out_g_ptr(void) { return out_g; }
 f32* get_out_b_ptr(void) { return out_b; }
 
+// Scene data pointers
+u8* get_shape_types_ptr(void) { return shape_types; }
+f32* get_shape_params_ptr(void) { return shape_params; }
+f32* get_shape_positions_ptr(void) { return shape_positions; }
+f32* get_shape_colors_ptr(void) { return shape_colors; }
+
 void set_ray_count(u32 count) {
     ray_count = count < MAX_RAYS ? count : MAX_RAYS;
 }
+
+void set_scene(u32 count, f32 k) {
+    shape_count = count < MAX_SHAPES ? count : MAX_SHAPES;
+    smooth_k = k;
+}
+
+u32 get_max_shapes(void) { return MAX_SHAPES; }
 
 void compute_background(f32 time) {
     f32 base_r = 0.02f;
@@ -221,7 +348,6 @@ void compute_background(f32 time) {
 // =============================================================================
 
 void march_rays(void) {
-    // Process rays in batches of 4
     u32 batch_count = (ray_count + 3) / 4;
     
     for (u32 batch = 0; batch < batch_count; batch++) {
@@ -243,29 +369,22 @@ void march_rays(void) {
         // Total distance traveled
         v128_t total_dist = wasm_f32x4_splat(0.0f);
         
-        // Hit mask (all ones = still marching)
+        // Active mask
         v128_t active = wasm_i32x4_splat(-1);
         
         v128_t max_dist = wasm_f32x4_splat(MAX_DIST);
         v128_t hit_thresh = wasm_f32x4_splat(HIT_THRESHOLD);
         
         for (int step = 0; step < MAX_STEPS; step++) {
-            // Evaluate SDF at current positions
             v128_t dist = scene_sdf_simd(px, py, pz);
             
-            // Check for hits (dist < HIT_THRESHOLD)
             v128_t hit = wasm_f32x4_lt(dist, hit_thresh);
-            
-            // Check for misses (total_dist > MAX_DIST)
             v128_t miss = wasm_f32x4_gt(total_dist, max_dist);
             
-            // Update active mask
             active = wasm_v128_andnot(active, wasm_v128_or(hit, miss));
             
-            // Early exit if no rays active
             if (!wasm_v128_any_true(active)) break;
             
-            // Advance positions (only active rays)
             v128_t step_dist = wasm_v128_and(dist, active);
             px = wasm_f32x4_add(px, wasm_f32x4_mul(dx, step_dist));
             py = wasm_f32x4_add(py, wasm_f32x4_mul(dy, step_dist));
@@ -277,7 +396,7 @@ void march_rays(void) {
         v128_t final_dist = scene_sdf_simd(px, py, pz);
         v128_t hit = wasm_f32x4_lt(final_dist, hit_thresh);
         
-        // Compute normals for hit points (central differences)
+        // Compute normals (central differences)
         v128_t eps = wasm_f32x4_splat(NORMAL_EPS);
         
         v128_t nx = wasm_f32x4_sub(
@@ -303,14 +422,10 @@ void march_rays(void) {
         ny = wasm_f32x4_mul(ny, inv_len);
         nz = wasm_f32x4_mul(nz, inv_len);
         
-        // Simple directional light from (1, 1, -1) normalized
-        const f32 light_x = 0.577f;  // 1/sqrt(3)
-        const f32 light_y = 0.577f;
-        const f32 light_z = -0.577f;
-        
-        v128_t lx = wasm_f32x4_splat(light_x);
-        v128_t ly = wasm_f32x4_splat(light_y);
-        v128_t lz = wasm_f32x4_splat(light_z);
+        // Directional light from (1, 1, -1) normalized
+        v128_t lx = wasm_f32x4_splat(0.577f);
+        v128_t ly = wasm_f32x4_splat(0.577f);
+        v128_t lz = wasm_f32x4_splat(-0.577f);
         
         // N dot L
         v128_t ndotl = wasm_f32x4_add(wasm_f32x4_add(
@@ -320,28 +435,40 @@ void march_rays(void) {
         ndotl = wasm_f32x4_max(ndotl, wasm_f32x4_splat(0.0f));
         
         // Ambient + diffuse
-        v128_t ambient = wasm_f32x4_splat(0.1f);
-        v128_t brightness = wasm_f32x4_add(ambient, wasm_f32x4_mul(ndotl, wasm_f32x4_splat(0.9f)));
+        v128_t brightness = wasm_f32x4_add(
+            wasm_f32x4_splat(0.1f),
+            wasm_f32x4_mul(ndotl, wasm_f32x4_splat(0.9f))
+        );
         
-        // Apply scene color
-        v128_t r = wasm_f32x4_mul(brightness, wasm_f32x4_splat(SCENE_COLOR_R));
-        v128_t g = wasm_f32x4_mul(brightness, wasm_f32x4_splat(SCENE_COLOR_G));
-        v128_t b = wasm_f32x4_mul(brightness, wasm_f32x4_splat(SCENE_COLOR_B));
+        // Get colors per ray (need to extract positions and look up colors)
+        // For now, we do this scalar per-ray since color lookup is per-shape
+        f32 px_arr[4], py_arr[4], pz_arr[4];
+        wasm_v128_store(px_arr, px);
+        wasm_v128_store(py_arr, py);
+        wasm_v128_store(pz_arr, pz);
         
-        // Background for misses
-        v128_t bg_r = wasm_f32x4_splat(bg_color[0]);
-        v128_t bg_g = wasm_f32x4_splat(bg_color[1]);
-        v128_t bg_b = wasm_f32x4_splat(bg_color[2]);
+        f32 bright_arr[4];
+        wasm_v128_store(bright_arr, brightness);
         
-        // Select hit color or background
-        r = wasm_v128_bitselect(r, bg_r, hit);
-        g = wasm_v128_bitselect(g, bg_g, hit);
-        b = wasm_v128_bitselect(b, bg_b, hit);
+        i32 hit_arr[4];
+        wasm_v128_store(hit_arr, hit);
         
-        // Store results
-        wasm_v128_store(&out_r[base], r);
-        wasm_v128_store(&out_g[base], g);
-        wasm_v128_store(&out_b[base], b);
+        for (int i = 0; i < 4; i++) {
+            u32 idx = base + i;
+            if (idx >= ray_count) break;
+            
+            if (hit_arr[i]) {
+                f32 cr, cg, cb;
+                get_hit_color(px_arr[i], py_arr[i], pz_arr[i], &cr, &cg, &cb);
+                out_r[idx] = bright_arr[i] * cr;
+                out_g[idx] = bright_arr[i] * cg;
+                out_b[idx] = bright_arr[i] * cb;
+            } else {
+                out_r[idx] = bg_color[0];
+                out_g[idx] = bg_color[1];
+                out_b[idx] = bg_color[2];
+            }
+        }
     }
 }
 
