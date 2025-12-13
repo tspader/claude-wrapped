@@ -63,17 +63,18 @@ function renderFrame(
   const { origins, directions } = camera.generateRays(width, height);
   const nRays = origins.length;
 
-  // Combined SDF for marching - use marchingSdf if provided, otherwise min() of scene SDFs
-  const marchSdf = result.marchingSdf
-    ? (p: Vec3) => result.marchingSdf!.evaluate(p)
-    : (p: Vec3) => {
-        let minDist = Infinity;
-        for (const [sdf] of scene) {
-          const d = sdf.evaluate(p);
-          minDist = Math.min(minDist, d);
-        }
-        return minDist;
-      };
+  // Combined SDF for marching - smooth union of all scene SDFs
+  const smoothK = config.scene.smoothK;
+  const marchSdf = (p: Vec3) => {
+    let result = scene[0]![0].evaluate(p);
+    for (let i = 1; i < scene.length; i++) {
+      const d = scene[i]![0].evaluate(p);
+      // Smooth union
+      const h = Math.max(0, Math.min(1, 0.5 + (0.5 * (d - result)) / smoothK));
+      result = d + (result - d) * h - smoothK * h * (1 - h);
+    }
+    return result;
+  };
 
   // March rays
   const { hit, positions } = marcher.march(marchSdf, origins, directions);
@@ -95,9 +96,9 @@ function renderFrame(
 
     // Determine base color by finding closest shape (with optional blending)
     const hitColors: Vec3[] = new Array(hitIndices.length);
-    const blendK = result.colorBlendK;
+    const blendK = config.scene.colorBlendK;
 
-    if (blendK !== undefined && blendK > 0) {
+    if (blendK > 0) {
       // Blend colors using smooth union math
       for (let hi = 0; hi < hitIndices.length; hi++) {
         const hitPos = hitPositions[hi]!;

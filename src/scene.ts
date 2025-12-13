@@ -75,7 +75,7 @@ export const config = {
       z: -1,
       noiseScale: 0.3,
       slingshot: {
-        cycleDuration: 8.0,
+        cycleDuration: 6.0,
         windupRatio: 0.25,
         restY: 0,
         launchOffsetX: 2.0,
@@ -88,49 +88,16 @@ export const config = {
 
 export type Config = typeof config;
 
-///////////
-// TOOLS //
-///////////
-// Seeded random number generator
+// =============================================================================
+// Scene State (persistent across frames)
+// =============================================================================
+
 function seededRandom(seed: number) {
   return () => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
     return seed / 0x7fffffff;
   };
 }
-
-// Simplex noise
-const noise2D = createNoise2D(() => sceneState.rng());
-
-function pnoise1(x: number, octaves: number = 1): number {
-  let value = 0;
-  let amplitude = 1;
-  let frequency = 1;
-  let maxValue = 0;
-
-  for (let i = 0; i < octaves; i++) {
-    value += noise2D(x * frequency, 0) * amplitude;
-    maxValue += amplitude;
-    amplitude *= 0.5;
-    frequency *= 2;
-  }
-
-  return value / maxValue;
-}
-
-// Easing functions
-function easeInOutQuad(t: number): number {
-  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
-}
-
-function easeOutQuad(t: number): number {
-  return 1 - (1 - t) * (1 - t);
-}
-
-
-// =============================================================================
-// Scene State (persistent across frames)
-// =============================================================================
 
 interface SceneState {
   basePositions: Vec3[];
@@ -179,6 +146,34 @@ function initSceneState(cfg: typeof config.scene): SceneState {
 }
 
 const sceneState = initSceneState(config.scene);
+
+// Simplex noise (must be after sceneState init)
+const noise2D = createNoise2D(() => sceneState.rng());
+
+function pnoise1(x: number, octaves: number = 1): number {
+  let value = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  let maxValue = 0;
+
+  for (let i = 0; i < octaves; i++) {
+    value += noise2D(x * frequency, 0) * amplitude;
+    maxValue += amplitude;
+    amplitude *= 0.5;
+    frequency *= 2;
+  }
+
+  return value / maxValue;
+}
+
+// Easing functions
+function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function easeOutQuad(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
 
 
 // Compute red ball position based on slingshot animation
@@ -232,10 +227,6 @@ export function getRedBallPosition(t: number): Vec3 {
 
 export interface SceneResult {
   scene: Array<[SDF, Vec3]>;
-  /** Optional SDF for ray marching (e.g. smooth union). If not provided, renderer uses min() of scene SDFs. */
-  marchingSdf?: SDF;
-  /** Optional blend factor for color transitions between shapes. If provided, colors blend in transition zones using smooth union math. */
-  colorBlendK?: number;
   overrides?: {
     camera?: Partial<typeof config.camera>;
     lighting?: Partial<typeof config.lighting>;
@@ -246,8 +237,8 @@ export function makeScene(
   t: number,
   prims: typeof primitives
 ): SceneResult {
-  const { sphere, smoothUnion } = prims;
-  const { animation, colors, smoothK, colorBlendK, redBall: redBallCfg } = config.scene;
+  const { sphere } = prims;
+  const { animation, colors, redBall: redBallCfg } = config.scene;
   const { driftSpeed, driftScale, sizeOscSpeed, sizeOscAmount, noiseSizeAmount } = animation;
   const {
     basePositions,
@@ -280,11 +271,6 @@ export function makeScene(
     shapes.push(sphere(size).translate(pos));
   }
 
-  let combined = shapes[0]!;
-  for (let i = 1; i < shapes.length; i++) {
-    combined = smoothUnion(combined, shapes[i]!, smoothK);
-  }
-
   // Red ball with slingshot animation + noise sway
   const redBallBasePos = getRedBallPosition(t);
   const [rbx, rby, rbz] = redBallBasePos;
@@ -299,17 +285,11 @@ export function makeScene(
   const redBallSize = Math.max(0.1, redBallRadius);
   const redBall = sphere(redBallSize).translate(redBallPos);
 
-  // Keep green blob separate for color lookup, merge everything for marching
-  const greenBlob = combined;
-  const fullMerged = smoothUnion(greenBlob, redBall, smoothK);
-
   return {
     scene: [
-      [greenBlob, colors.blob],
+      ...shapes.map((s): [SDF, Vec3] => [s, colors.blob]),
       [redBall, colors.redBall],
     ],
-    marchingSdf: fullMerged,
-    colorBlendK,
     overrides: { camera: { fov: 45 } },
   };
 }
