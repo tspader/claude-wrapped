@@ -15,6 +15,7 @@ Terminal raymarcher with OpenTUI integration. Renders 3D SDF scenes as ASCII art
 - `BoxRenderable` - container with borders
 - `TextRenderable` - text display
 - `renderer.root.add()` - add renderables to scene
+
 ## ours
 - `src/main.ts` - main entry, renderer setup, UI
 - `src/renderer/` - raymarching (Camera, RayMarcher, SDF)
@@ -22,16 +23,8 @@ Terminal raymarcher with OpenTUI integration. Renders 3D SDF scenes as ASCII art
 - `doc/opentui/packages/core/` - OpenTUI source reference
 
 # architecture
-makeScene(t) → SDF scene
-    ↓
-Camera.generateRays() → ray origins/directions
-    ↓
-RayMarcher.march() → hit positions
-    ↓
-renderToBuffer() → writes to OpenTUI FrameBuffer via setCell()
-    ↓
-BoxRenderable/TextRenderable → UI overlays on top
-
+- `doc/wasm.md` describes how the renderer backend works
+- `doc/scene.md` describes how we define the scene and pass it to the renderer
 - `src/main.ts` uses:
   - OpenTUI's createCliRenderer(), FrameBufferRenderable for the raymarched scene
   - BoxRenderable/TextRenderable for UI
