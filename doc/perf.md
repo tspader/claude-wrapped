@@ -1,0 +1,8 @@
+- how much do the point lights contribute?
+- how much does the directional lights contribute?
+- can we redesign the scene to have less geometry?
+  - idea: use one cylinder for each column
+  - idea: model a cannon with a long, angled cylinder + two discs for wheels (if disks are cheap)
+  - make claude's arms one shape that pierces his body
+  - make claude's legs the result of subtracting two crosswise rectangles from his body rather than four rectangles protruding from the body
+  - why aren't we upscaling in wasm?

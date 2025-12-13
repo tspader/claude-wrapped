@@ -52,6 +52,10 @@ static u8 shape_groups[MAX_SHAPES];          // group ID per shape
 static u32 shape_count = 0;
 static f32 smooth_k = 0.5f;
 
+// Scene bounding box (computed from shapes)
+static f32 scene_aabb_min[3];
+static f32 scene_aabb_max[3];
+
 // Group data
 #define MAX_GROUPS 8
 static u8 group_blend_mode[MAX_GROUPS];      // 0 = hard union (min), 1 = smooth union
@@ -59,6 +63,29 @@ static u32 group_count = 0;
 
 // Current ray count
 static u32 ray_count = 0;
+
+// =============================================================================
+// Performance Metrics
+// =============================================================================
+
+static f32 perf_metrics[16];  // Timing/counter slots
+
+// Metric indices
+#define PERF_TOTAL_STEPS 0      // Total march steps across all rays
+#define PERF_TOTAL_SDF_CALLS 1  // Total SDF evaluations (in march loop)
+#define PERF_NORMAL_SDF_CALLS 2 // SDF calls for normal estimation
+#define PERF_COLOR_LOOKUPS 3    // Color lookup iterations
+#define PERF_EARLY_HITS 4       // Rays that hit before MAX_STEPS
+#define PERF_MISSES 5           // Rays that missed (exceeded MAX_DIST)
+#define PERF_AVG_STEPS 6        // Average steps per ray (computed at end)
+#define PERF_HIT_RATE 7         // Hit rate percentage
+#define PERF_AABB_SKIPPED 8     // Rays skipped by AABB test
+
+f32* get_perf_metrics_ptr(void) { return perf_metrics; }
+
+void reset_perf_metrics(void) {
+    for (int i = 0; i < 16; i++) perf_metrics[i] = 0.0f;
+}
 
 // =============================================================================
 // Math helpers
@@ -89,6 +116,54 @@ static f32 maxf(f32 a, f32 b) { return a > b ? a : b; }
 static f32 minf(f32 a, f32 b) { return a < b ? a : b; }
 static f32 clampf(f32 x, f32 lo, f32 hi) { return minf(maxf(x, lo), hi); }
 static f32 absf(f32 x) { return x < 0 ? -x : x; }
+
+// Ray-AABB intersection test (slab method)
+// Returns 1 if ray intersects AABB, 0 otherwise
+static i32 ray_intersects_aabb(f32 ox, f32 oy, f32 oz, f32 dx, f32 dy, f32 dz) {
+    f32 tmin = 0.0f;
+    f32 tmax = MAX_DIST;
+    
+    // X slab
+    if (absf(dx) > 1e-8f) {
+        f32 inv_d = 1.0f / dx;
+        f32 t1 = (scene_aabb_min[0] - ox) * inv_d;
+        f32 t2 = (scene_aabb_max[0] - ox) * inv_d;
+        if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = maxf(tmin, t1);
+        tmax = minf(tmax, t2);
+        if (tmin > tmax) return 0;
+    } else {
+        if (ox < scene_aabb_min[0] || ox > scene_aabb_max[0]) return 0;
+    }
+    
+    // Y slab
+    if (absf(dy) > 1e-8f) {
+        f32 inv_d = 1.0f / dy;
+        f32 t1 = (scene_aabb_min[1] - oy) * inv_d;
+        f32 t2 = (scene_aabb_max[1] - oy) * inv_d;
+        if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = maxf(tmin, t1);
+        tmax = minf(tmax, t2);
+        if (tmin > tmax) return 0;
+    } else {
+        if (oy < scene_aabb_min[1] || oy > scene_aabb_max[1]) return 0;
+    }
+    
+    // Z slab
+    if (absf(dz) > 1e-8f) {
+        f32 inv_d = 1.0f / dz;
+        f32 t1 = (scene_aabb_min[2] - oz) * inv_d;
+        f32 t2 = (scene_aabb_max[2] - oz) * inv_d;
+        if (t1 > t2) { f32 tmp = t1; t1 = t2; t2 = tmp; }
+        tmin = maxf(tmin, t1);
+        tmax = minf(tmax, t2);
+        if (tmin > tmax) return 0;
+    } else {
+        if (oz < scene_aabb_min[2] || oz > scene_aabb_max[2]) return 0;
+    }
+    
+    return 1;
+}
 
 // =============================================================================
 // SDF Primitives (scalar)
@@ -315,6 +390,8 @@ static void get_hit_color(f32 px, f32 py, f32 pz, f32* r, f32* g, f32* b) {
     u32 closest = 0;
     
     for (u32 i = 0; i < shape_count; i++) {
+        perf_metrics[PERF_COLOR_LOOKUPS] += 1.0f;  // Count shape iterations
+        
         u8 type = shape_types[i];
         f32 cx = shape_positions[i * 3];
         f32 cy = shape_positions[i * 3 + 1];
@@ -372,6 +449,50 @@ void set_ray_count(u32 count) {
 void set_scene(u32 count, f32 k) {
     shape_count = count < MAX_SHAPES ? count : MAX_SHAPES;
     smooth_k = k;
+    
+    // Compute scene AABB from all shapes
+    if (shape_count == 0) {
+        scene_aabb_min[0] = scene_aabb_min[1] = scene_aabb_min[2] = -MAX_DIST;
+        scene_aabb_max[0] = scene_aabb_max[1] = scene_aabb_max[2] = MAX_DIST;
+        return;
+    }
+    
+    // Start with first shape bounds
+    scene_aabb_min[0] = scene_aabb_min[1] = scene_aabb_min[2] = 1e10f;
+    scene_aabb_max[0] = scene_aabb_max[1] = scene_aabb_max[2] = -1e10f;
+    
+    for (u32 i = 0; i < shape_count; i++) {
+        f32 cx = shape_positions[i * 3];
+        f32 cy = shape_positions[i * 3 + 1];
+        f32 cz = shape_positions[i * 3 + 2];
+        
+        f32 ex, ey, ez;  // extent from center
+        if (shape_types[i] == SHAPE_SPHERE) {
+            f32 r = shape_params[i * 4];
+            ex = ey = ez = r;
+        } else {
+            ex = shape_params[i * 4];
+            ey = shape_params[i * 4 + 1];
+            ez = shape_params[i * 4 + 2];
+        }
+        
+        // Expand AABB
+        if (cx - ex < scene_aabb_min[0]) scene_aabb_min[0] = cx - ex;
+        if (cy - ey < scene_aabb_min[1]) scene_aabb_min[1] = cy - ey;
+        if (cz - ez < scene_aabb_min[2]) scene_aabb_min[2] = cz - ez;
+        if (cx + ex > scene_aabb_max[0]) scene_aabb_max[0] = cx + ex;
+        if (cy + ey > scene_aabb_max[1]) scene_aabb_max[1] = cy + ey;
+        if (cz + ez > scene_aabb_max[2]) scene_aabb_max[2] = cz + ez;
+    }
+    
+    // Add padding for smooth union blending
+    f32 padding = smooth_k * 2.0f;
+    scene_aabb_min[0] -= padding;
+    scene_aabb_min[1] -= padding;
+    scene_aabb_min[2] -= padding;
+    scene_aabb_max[0] += padding;
+    scene_aabb_max[1] += padding;
+    scene_aabb_max[2] += padding;
 }
 
 void set_groups(u32 count) {
@@ -400,6 +521,11 @@ void compute_background(f32 time) {
 void march_rays(void) {
     u32 batch_count = (ray_count + 3) / 4;
     
+    // Track steps per batch for metrics
+    u32 total_steps_all = 0;
+    u32 total_hits = 0;
+    u32 total_misses = 0;
+    
     for (u32 batch = 0; batch < batch_count; batch++) {
         u32 base = batch * 4;
         
@@ -425,8 +551,10 @@ void march_rays(void) {
         v128_t max_dist = wasm_f32x4_splat(MAX_DIST);
         v128_t hit_thresh = wasm_f32x4_splat(HIT_THRESHOLD);
         
+        u32 steps_this_batch = 0;
         for (int step = 0; step < MAX_STEPS; step++) {
             v128_t dist = scene_sdf_simd(px, py, pz);
+            steps_this_batch++;
             
             v128_t hit = wasm_f32x4_lt(dist, hit_thresh);
             v128_t miss = wasm_f32x4_gt(total_dist, max_dist);
@@ -442,84 +570,107 @@ void march_rays(void) {
             total_dist = wasm_f32x4_add(total_dist, step_dist);
         }
         
+        total_steps_all += steps_this_batch;
+        perf_metrics[PERF_TOTAL_SDF_CALLS] += (f32)steps_this_batch;  // SDF calls in march loop
+        
         // Final hit test
         v128_t final_dist = scene_sdf_simd(px, py, pz);
         v128_t hit = wasm_f32x4_lt(final_dist, hit_thresh);
+        perf_metrics[PERF_TOTAL_SDF_CALLS] += 1.0f;  // Final hit test
         
-        // Compute normals (central differences)
-        v128_t eps = wasm_f32x4_splat(NORMAL_EPS);
+        // Extract hit mask to check if ANY ray hit
+        i32 hit_arr[4];
+        wasm_v128_store(hit_arr, hit);
         
-        v128_t nx = wasm_f32x4_sub(
-            scene_sdf_simd(wasm_f32x4_add(px, eps), py, pz),
-            scene_sdf_simd(wasm_f32x4_sub(px, eps), py, pz)
-        );
-        v128_t ny = wasm_f32x4_sub(
-            scene_sdf_simd(px, wasm_f32x4_add(py, eps), pz),
-            scene_sdf_simd(px, wasm_f32x4_sub(py, eps), pz)
-        );
-        v128_t nz = wasm_f32x4_sub(
-            scene_sdf_simd(px, py, wasm_f32x4_add(pz, eps)),
-            scene_sdf_simd(px, py, wasm_f32x4_sub(pz, eps))
-        );
+        // Check if any ray in this batch hit
+        i32 any_hit = hit_arr[0] | hit_arr[1] | hit_arr[2] | hit_arr[3];
         
-        // Normalize
-        v128_t len_sq = wasm_f32x4_add(wasm_f32x4_add(
-            wasm_f32x4_mul(nx, nx),
-            wasm_f32x4_mul(ny, ny)),
-            wasm_f32x4_mul(nz, nz));
-        v128_t inv_len = wasm_f32x4_div(wasm_f32x4_splat(1.0f), wasm_f32x4_sqrt(len_sq));
-        nx = wasm_f32x4_mul(nx, inv_len);
-        ny = wasm_f32x4_mul(ny, inv_len);
-        nz = wasm_f32x4_mul(nz, inv_len);
+        // Only compute normals if at least one ray hit
+        f32 bright_arr[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         
-        // Directional light from (1, 1, -1) normalized
-        v128_t lx = wasm_f32x4_splat(0.577f);
-        v128_t ly = wasm_f32x4_splat(0.577f);
-        v128_t lz = wasm_f32x4_splat(-0.577f);
-        
-        // N dot L
-        v128_t ndotl = wasm_f32x4_add(wasm_f32x4_add(
-            wasm_f32x4_mul(nx, lx),
-            wasm_f32x4_mul(ny, ly)),
-            wasm_f32x4_mul(nz, lz));
-        ndotl = wasm_f32x4_max(ndotl, wasm_f32x4_splat(0.0f));
-        
-        // Ambient + diffuse
-        v128_t brightness = wasm_f32x4_add(
-            wasm_f32x4_splat(0.1f),
-            wasm_f32x4_mul(ndotl, wasm_f32x4_splat(0.9f))
-        );
+        if (any_hit) {
+            // Compute normals (central differences) - 6 SDF calls
+            v128_t eps = wasm_f32x4_splat(NORMAL_EPS);
+            
+            v128_t nx = wasm_f32x4_sub(
+                scene_sdf_simd(wasm_f32x4_add(px, eps), py, pz),
+                scene_sdf_simd(wasm_f32x4_sub(px, eps), py, pz)
+            );
+            v128_t ny = wasm_f32x4_sub(
+                scene_sdf_simd(px, wasm_f32x4_add(py, eps), pz),
+                scene_sdf_simd(px, wasm_f32x4_sub(py, eps), pz)
+            );
+            v128_t nz = wasm_f32x4_sub(
+                scene_sdf_simd(px, py, wasm_f32x4_add(pz, eps)),
+                scene_sdf_simd(px, py, wasm_f32x4_sub(pz, eps))
+            );
+            perf_metrics[PERF_NORMAL_SDF_CALLS] += 6.0f;  // 6 SDF calls for normals
+            
+            // Normalize
+            v128_t len_sq = wasm_f32x4_add(wasm_f32x4_add(
+                wasm_f32x4_mul(nx, nx),
+                wasm_f32x4_mul(ny, ny)),
+                wasm_f32x4_mul(nz, nz));
+            v128_t inv_len = wasm_f32x4_div(wasm_f32x4_splat(1.0f), wasm_f32x4_sqrt(len_sq));
+            nx = wasm_f32x4_mul(nx, inv_len);
+            ny = wasm_f32x4_mul(ny, inv_len);
+            nz = wasm_f32x4_mul(nz, inv_len);
+            
+            // Directional light from (1, 1, -1) normalized
+            v128_t lx = wasm_f32x4_splat(0.577f);
+            v128_t ly = wasm_f32x4_splat(0.577f);
+            v128_t lz = wasm_f32x4_splat(-0.577f);
+            
+            // N dot L
+            v128_t ndotl = wasm_f32x4_add(wasm_f32x4_add(
+                wasm_f32x4_mul(nx, lx),
+                wasm_f32x4_mul(ny, ly)),
+                wasm_f32x4_mul(nz, lz));
+            ndotl = wasm_f32x4_max(ndotl, wasm_f32x4_splat(0.0f));
+            
+            // Ambient + diffuse
+            v128_t brightness = wasm_f32x4_add(
+                wasm_f32x4_splat(0.1f),
+                wasm_f32x4_mul(ndotl, wasm_f32x4_splat(0.9f))
+            );
+            
+            wasm_v128_store(bright_arr, brightness);
+        }
         
         // Get colors per ray (need to extract positions and look up colors)
-        // For now, we do this scalar per-ray since color lookup is per-shape
         f32 px_arr[4], py_arr[4], pz_arr[4];
         wasm_v128_store(px_arr, px);
         wasm_v128_store(py_arr, py);
         wasm_v128_store(pz_arr, pz);
-        
-        f32 bright_arr[4];
-        wasm_v128_store(bright_arr, brightness);
-        
-        i32 hit_arr[4];
-        wasm_v128_store(hit_arr, hit);
         
         for (int i = 0; i < 4; i++) {
             u32 idx = base + i;
             if (idx >= ray_count) break;
             
             if (hit_arr[i]) {
+                total_hits++;
                 f32 cr, cg, cb;
                 get_hit_color(px_arr[i], py_arr[i], pz_arr[i], &cr, &cg, &cb);
                 out_r[idx] = bright_arr[i] * cr;
                 out_g[idx] = bright_arr[i] * cg;
                 out_b[idx] = bright_arr[i] * cb;
             } else {
+                total_misses++;
                 out_r[idx] = bg_color[0];
                 out_g[idx] = bg_color[1];
                 out_b[idx] = bg_color[2];
             }
         }
     }
+    
+    // Finalize metrics
+    perf_metrics[PERF_TOTAL_STEPS] = (f32)total_steps_all;
+    perf_metrics[PERF_EARLY_HITS] = (f32)total_hits;
+    perf_metrics[PERF_MISSES] = (f32)total_misses;
+    u32 active_batches = batch_count > 0 ? batch_count : 1;
+    perf_metrics[PERF_AVG_STEPS] = (f32)total_steps_all / (f32)active_batches;
+    perf_metrics[PERF_HIT_RATE] = (ray_count > 0) ? (100.0f * (f32)total_hits / (f32)ray_count) : 0.0f;
+    perf_metrics[PERF_AABB_SKIPPED] = 0.0f;  // AABB check disabled for this scene
 }
 
 u32 get_max_rays(void) { return MAX_RAYS; }

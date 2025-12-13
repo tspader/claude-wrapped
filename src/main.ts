@@ -41,6 +41,9 @@ interface WasmExports {
   get_shape_colors_ptr: () => number;
   get_shape_groups_ptr: () => number;
   get_group_blend_modes_ptr: () => number;
+  // Performance metrics pointer
+  get_perf_metrics_ptr: () => number;
+  reset_perf_metrics: () => void;
   // Functions
   get_max_rays: () => number;
   get_max_shapes: () => number;
@@ -51,6 +54,19 @@ interface WasmExports {
   compute_background: (time: number) => void;
   march_rays: () => void;
 }
+
+// WASM perf metric indices (must match renderer.c)
+const PERF = {
+  TOTAL_STEPS: 0,
+  TOTAL_SDF_CALLS: 1,
+  NORMAL_SDF_CALLS: 2,
+  COLOR_LOOKUPS: 3,
+  EARLY_HITS: 4,
+  MISSES: 5,
+  AVG_STEPS: 6,
+  HIT_RATE: 7,
+  AABB_SKIPPED: 8,
+} as const;
 
 interface WasmRenderer {
   exports: WasmExports;
@@ -75,6 +91,30 @@ interface WasmRenderer {
   shapeColors: Float32Array;
   shapeGroups: Uint8Array;
   groupBlendModes: Uint8Array;
+  // Performance metrics
+  perfMetrics: Float32Array;
+}
+
+// Granular timing for TS-side operations
+interface FrameTimings {
+  sceneDataMs: number;
+  compileSceneMs: number;
+  loadSceneMs: number;
+  rayGenMs: number;
+  rayCopyMs: number;
+  marchRaysMs: number;
+  renderToBufferMs: number;
+  totalMs: number;
+  // WASM metrics
+  wasmTotalSteps: number;
+  wasmTotalSdfCalls: number;
+  wasmNormalSdfCalls: number;
+  wasmColorLookups: number;
+  wasmHits: number;
+  wasmMisses: number;
+  wasmAvgSteps: number;
+  wasmHitRate: number;
+  wasmAabbSkipped: number;
 }
 
 async function loadWasm(): Promise<WasmRenderer> {
@@ -112,6 +152,8 @@ async function loadWasm(): Promise<WasmRenderer> {
     shapeColors: new Float32Array(memory.buffer, exports.get_shape_colors_ptr(), maxShapes * 3),
     shapeGroups: new Uint8Array(memory.buffer, exports.get_shape_groups_ptr(), maxShapes),
     groupBlendModes: new Uint8Array(memory.buffer, exports.get_group_blend_modes_ptr(), maxGroups),
+    // Performance metrics (16 floats)
+    perfMetrics: new Float32Array(memory.buffer, exports.get_perf_metrics_ptr(), 16),
   };
 }
 
@@ -155,23 +197,58 @@ function renderFrame(
   scale: number,
   frameBuffer: OptimizedBuffer,
   camera: Camera
-): void {
+): FrameTimings {
+  const timings: FrameTimings = {
+    sceneDataMs: 0,
+    compileSceneMs: 0,
+    loadSceneMs: 0,
+    rayGenMs: 0,
+    rayCopyMs: 0,
+    marchRaysMs: 0,
+    renderToBufferMs: 0,
+    totalMs: 0,
+    wasmTotalSteps: 0,
+    wasmTotalSdfCalls: 0,
+    wasmNormalSdfCalls: 0,
+    wasmColorLookups: 0,
+    wasmHits: 0,
+    wasmMisses: 0,
+    wasmAvgSteps: 0,
+    wasmHitRate: 0,
+    wasmAabbSkipped: 0,
+  };
+
+  const totalStart = performance.now();
   const nRays = nativeWidth * nativeHeight;
 
   if (nRays > wasm.maxRays) {
     console.error(`Too many rays: ${nRays} > ${wasm.maxRays}`);
-    return;
+    return timings;
   }
 
+  // Reset WASM perf metrics
+  wasm.exports.reset_perf_metrics();
+
   // Compile scene at time t and load to WASM
+  let t0 = performance.now();
   const objects = makeSceneData(t);
+  timings.sceneDataMs = performance.now() - t0;
+
+  t0 = performance.now();
   const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
+  timings.compileSceneMs = performance.now() - t0;
+
+  t0 = performance.now();
   loadScene(wasm, flatScene);
+  timings.loadSceneMs = performance.now() - t0;
 
   // Generate rays using JS Camera at native resolution
+  t0 = performance.now();
   const { origins, directions } = camera.generateRays(nativeWidth, nativeHeight);
+  timings.rayGenMs = performance.now() - t0;
 
   // Copy rays to WASM buffers
+  t0 = performance.now();
   for (let i = 0; i < nRays; i++) {
     const o = origins[i]!;
     const d = directions[i]!;
@@ -182,17 +259,36 @@ function renderFrame(
     wasm.rayDy[i] = d[1];
     wasm.rayDz[i] = d[2];
   }
+  timings.rayCopyMs = performance.now() - t0;
 
   // Set ray count and compute background
   wasm.exports.set_ray_count(nRays);
   wasm.exports.compute_background(t);
 
   // Do the raymarching in WASM
+  t0 = performance.now();
   wasm.exports.march_rays();
+  timings.marchRaysMs = performance.now() - t0;
+
+  // Read WASM perf metrics
+  timings.wasmTotalSteps = wasm.perfMetrics[PERF.TOTAL_STEPS]!;
+  timings.wasmTotalSdfCalls = wasm.perfMetrics[PERF.TOTAL_SDF_CALLS]!;
+  timings.wasmNormalSdfCalls = wasm.perfMetrics[PERF.NORMAL_SDF_CALLS]!;
+  timings.wasmColorLookups = wasm.perfMetrics[PERF.COLOR_LOOKUPS]!;
+  timings.wasmHits = wasm.perfMetrics[PERF.EARLY_HITS]!;
+  timings.wasmMisses = wasm.perfMetrics[PERF.MISSES]!;
+  timings.wasmAvgSteps = wasm.perfMetrics[PERF.AVG_STEPS]!;
+  timings.wasmHitRate = wasm.perfMetrics[PERF.HIT_RATE]!;
+  timings.wasmAabbSkipped = wasm.perfMetrics[PERF.AABB_SKIPPED]!;
 
   // Read results and render to buffer with upscaling
+  t0 = performance.now();
   const bg: Vec3 = [wasm.bgColor[0]!, wasm.bgColor[1]!, wasm.bgColor[2]!];
   renderToBufferUpscaled(wasm, nativeWidth, nativeHeight, termWidth, termHeight, scale, frameBuffer, bg);
+  timings.renderToBufferMs = performance.now() - t0;
+
+  timings.totalMs = performance.now() - totalStart;
+  return timings;
 }
 
 // =============================================================================
@@ -262,6 +358,9 @@ function parseArgs(): {
   animate: boolean;
   fps: number;
   scale: number;
+  bench: boolean;
+  width: number | null;
+  height: number | null;
 } {
   const args = process.argv.slice(2);
   const result = {
@@ -269,6 +368,9 @@ function parseArgs(): {
     animate: false,
     fps: 30,
     scale: 1,
+    bench: false,
+    width: null as number | null,
+    height: null as number | null,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -289,6 +391,18 @@ function parseArgs(): {
       case "--scale":
         result.scale = parseInt(args[++i] || "1", 10);
         break;
+      case "-b":
+      case "--bench":
+        result.bench = true;
+        break;
+      case "-w":
+      case "--width":
+        result.width = parseInt(args[++i] || "256", 10);
+        break;
+      case "-h":
+      case "--height":
+        result.height = parseInt(args[++i] || "64", 10);
+        break;
       case "--help":
         console.log(`Usage: bun src/main.ts [options]
 
@@ -297,6 +411,9 @@ Options:
   -a, --animate         Run animation loop
   --fps <int>           Frames per second (default: 30)
   -s, --scale <int>     Upscale factor (default: 1, render at 1/scale resolution)
+  -b, --bench           Benchmark mode (no display, prints stats)
+  -w, --width <int>     Native render width (default: terminal width)
+  -h, --height <int>    Native render height (default: terminal height)
   --help                Show this help`);
         process.exit(0);
     }
@@ -305,11 +422,210 @@ Options:
   return result;
 }
 
+// =============================================================================
+// Benchmark Mode
+// =============================================================================
+
+async function runBenchmark(
+  wasm: WasmRenderer,
+  nativeWidth: number,
+  nativeHeight: number,
+  camera: Camera
+): Promise<void> {
+  const WARMUP_FRAMES = 10;
+  const MEASURE_FRAMES = 10;
+
+  console.log(`\n=== BENCHMARK MODE ===`);
+  console.log(`Native resolution: ${nativeWidth}x${nativeHeight}`);
+  console.log(`Rays: ${nativeWidth * nativeHeight}`);
+  console.log(`Warmup frames: ${WARMUP_FRAMES}`);
+  console.log(`Measurement frames: ${MEASURE_FRAMES}`);
+  console.log();
+
+  // We need a dummy framebuffer for renderToBuffer - create minimal typed array
+  const dummyBuffer = {
+    setCell: () => {},
+  } as unknown as import("@opentui/core").OptimizedBuffer;
+
+  // Warmup
+  console.log("Warming up...");
+  for (let i = 0; i < WARMUP_FRAMES; i++) {
+    const t = i * 0.1;
+    renderFrameBenchmark(wasm, t, nativeWidth, nativeHeight, camera);
+  }
+
+  // Measure
+  console.log("Measuring...\n");
+  const allTimings: FrameTimings[] = [];
+
+  for (let i = 0; i < MEASURE_FRAMES; i++) {
+    const t = (WARMUP_FRAMES + i) * 0.1;
+    const timings = renderFrameBenchmark(wasm, t, nativeWidth, nativeHeight, camera);
+    allTimings.push(timings);
+  }
+
+  // Compute stats
+  const totals = allTimings.map((t) => t.totalMs).sort((a, b) => a - b);
+  const marchTimes = allTimings.map((t) => t.marchRaysMs).sort((a, b) => a - b);
+  const medianTotal = totals[Math.floor(totals.length / 2)]!;
+  const worstTotal = totals[totals.length - 1]!;
+  const medianMarch = marchTimes[Math.floor(marchTimes.length / 2)]!;
+  const worstMarch = marchTimes[marchTimes.length - 1]!;
+
+  const last = allTimings[allTimings.length - 1]!;
+
+  console.log(`=== RESULTS ===`);
+  console.log(`Resolution: ${nativeWidth}x${nativeHeight} (${nativeWidth * nativeHeight} rays)`);
+  console.log();
+  console.log(`-- Frame Timing --`);
+  console.log(`  Median total:  ${medianTotal.toFixed(2)}ms`);
+  console.log(`  Worst total:   ${worstTotal.toFixed(2)}ms`);
+  console.log(`  Median march:  ${medianMarch.toFixed(2)}ms`);
+  console.log(`  Worst march:   ${worstMarch.toFixed(2)}ms`);
+  console.log();
+  console.log(`-- Last Frame Breakdown --`);
+  console.log(`  sceneData:     ${last.sceneDataMs.toFixed(3)}ms`);
+  console.log(`  compileScene:  ${last.compileSceneMs.toFixed(3)}ms`);
+  console.log(`  loadScene:     ${last.loadSceneMs.toFixed(3)}ms`);
+  console.log(`  rayGen:        ${last.rayGenMs.toFixed(3)}ms`);
+  console.log(`  rayCopy:       ${last.rayCopyMs.toFixed(3)}ms`);
+  console.log(`  marchRays:     ${last.marchRaysMs.toFixed(3)}ms`);
+  console.log(`  renderBuffer:  ${last.renderToBufferMs.toFixed(3)}ms`);
+  console.log(`  TOTAL:         ${last.totalMs.toFixed(3)}ms`);
+  console.log();
+  console.log(`-- WASM Metrics --`);
+  console.log(`  totalSteps:    ${last.wasmTotalSteps.toFixed(0)}`);
+  console.log(`  avgSteps:      ${last.wasmAvgSteps.toFixed(1)}/batch`);
+  console.log(`  sdfCalls:      ${last.wasmTotalSdfCalls.toFixed(0)} (march loop)`);
+  console.log(`  normalSdf:     ${last.wasmNormalSdfCalls.toFixed(0)}`);
+  console.log(`  colorLookups:  ${last.wasmColorLookups.toFixed(0)}`);
+  console.log(`  hits/misses:   ${last.wasmHits.toFixed(0)}/${last.wasmMisses.toFixed(0)}`);
+  console.log(`  hitRate:       ${last.wasmHitRate.toFixed(1)}%`);
+  console.log(`  aabbSkipped:   ${last.wasmAabbSkipped.toFixed(0)}`);
+  console.log();
+}
+
+/**
+ * Benchmark version of renderFrame - skips the terminal output phase
+ */
+function renderFrameBenchmark(
+  wasm: WasmRenderer,
+  t: number,
+  nativeWidth: number,
+  nativeHeight: number,
+  camera: Camera
+): FrameTimings {
+  const timings: FrameTimings = {
+    sceneDataMs: 0,
+    compileSceneMs: 0,
+    loadSceneMs: 0,
+    rayGenMs: 0,
+    rayCopyMs: 0,
+    marchRaysMs: 0,
+    renderToBufferMs: 0,
+    totalMs: 0,
+    wasmTotalSteps: 0,
+    wasmTotalSdfCalls: 0,
+    wasmNormalSdfCalls: 0,
+    wasmColorLookups: 0,
+    wasmHits: 0,
+    wasmMisses: 0,
+    wasmAvgSteps: 0,
+    wasmHitRate: 0,
+    wasmAabbSkipped: 0,
+  };
+
+  const totalStart = performance.now();
+  const nRays = nativeWidth * nativeHeight;
+
+  if (nRays > wasm.maxRays) {
+    console.error(`Too many rays: ${nRays} > ${wasm.maxRays}`);
+    return timings;
+  }
+
+  // Reset WASM perf metrics
+  wasm.exports.reset_perf_metrics();
+
+  // Compile scene at time t and load to WASM
+  let t0 = performance.now();
+  const objects = makeSceneData(t);
+  timings.sceneDataMs = performance.now() - t0;
+
+  t0 = performance.now();
+  const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
+  timings.compileSceneMs = performance.now() - t0;
+
+  t0 = performance.now();
+  loadScene(wasm, flatScene);
+  timings.loadSceneMs = performance.now() - t0;
+
+  // Generate rays using JS Camera at native resolution
+  t0 = performance.now();
+  const { origins, directions } = camera.generateRays(nativeWidth, nativeHeight);
+  timings.rayGenMs = performance.now() - t0;
+
+  // Copy rays to WASM buffers
+  t0 = performance.now();
+  for (let i = 0; i < nRays; i++) {
+    const o = origins[i]!;
+    const d = directions[i]!;
+    wasm.rayOx[i] = o[0];
+    wasm.rayOy[i] = o[1];
+    wasm.rayOz[i] = o[2];
+    wasm.rayDx[i] = d[0];
+    wasm.rayDy[i] = d[1];
+    wasm.rayDz[i] = d[2];
+  }
+  timings.rayCopyMs = performance.now() - t0;
+
+  // Set ray count and compute background
+  wasm.exports.set_ray_count(nRays);
+  wasm.exports.compute_background(t);
+
+  // Do the raymarching in WASM
+  t0 = performance.now();
+  wasm.exports.march_rays();
+  timings.marchRaysMs = performance.now() - t0;
+
+  // Read WASM perf metrics
+  timings.wasmTotalSteps = wasm.perfMetrics[PERF.TOTAL_STEPS]!;
+  timings.wasmTotalSdfCalls = wasm.perfMetrics[PERF.TOTAL_SDF_CALLS]!;
+  timings.wasmNormalSdfCalls = wasm.perfMetrics[PERF.NORMAL_SDF_CALLS]!;
+  timings.wasmColorLookups = wasm.perfMetrics[PERF.COLOR_LOOKUPS]!;
+  timings.wasmHits = wasm.perfMetrics[PERF.EARLY_HITS]!;
+  timings.wasmMisses = wasm.perfMetrics[PERF.MISSES]!;
+  timings.wasmAvgSteps = wasm.perfMetrics[PERF.AVG_STEPS]!;
+  timings.wasmHitRate = wasm.perfMetrics[PERF.HIT_RATE]!;
+  timings.wasmAabbSkipped = wasm.perfMetrics[PERF.AABB_SKIPPED]!;
+
+  // Skip renderToBuffer in benchmark mode - that's terminal I/O
+  timings.renderToBufferMs = 0;
+
+  timings.totalMs = performance.now() - totalStart;
+  return timings;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs();
 
   // Load WASM module
   const wasm = await loadWasm();
+
+  // Benchmark mode - no renderer needed
+  if (args.bench) {
+    const nativeWidth = args.width ?? 256;
+    const nativeHeight = args.height ?? 64;
+
+    const camera = new Camera({
+      eye: config.camera.eye,
+      at: config.camera.at,
+      up: config.camera.up,
+      fov: config.camera.fov,
+    });
+
+    await runBenchmark(wasm, nativeWidth, nativeHeight, camera);
+    return;
+  }
 
   // Create OpenTUI renderer
   const renderer = await createCliRenderer({
@@ -398,10 +714,12 @@ async function main(): Promise<void> {
   let worstFrameTime = 0;
   let medianFrameTime = 0;
   let frameCount = 0;
+  let lastTimings: FrameTimings | null = null;
 
-  function updateStats(frameTimeMs: number): void {
-    frameTimes.push(frameTimeMs);
+  function updateStats(timings: FrameTimings): void {
+    frameTimes.push(timings.totalMs);
     frameCount++;
+    lastTimings = timings;
 
     // Update stats every FPS frames
     if (frameCount % args.fps === 0) {
@@ -414,9 +732,28 @@ async function main(): Promise<void> {
     statsText.content = [
       "",
       `Resolution: ${nativeWidth}x${nativeHeight} (${scale}x)`,
-      `Frame: ${frameTimeMs.toFixed(1)}ms`,
-      `Worst: ${worstFrameTime.toFixed(1)}ms`,
-      `Median: ${medianFrameTime.toFixed(1)}ms`,
+      `Rays: ${nativeWidth * nativeHeight}`,
+      "",
+      "-- TS Timings --",
+      `  sceneData:    ${timings.sceneDataMs.toFixed(2)}ms`,
+      `  compileScene: ${timings.compileSceneMs.toFixed(2)}ms`,
+      `  loadScene:    ${timings.loadSceneMs.toFixed(2)}ms`,
+      `  rayGen:       ${timings.rayGenMs.toFixed(2)}ms`,
+      `  rayCopy:      ${timings.rayCopyMs.toFixed(2)}ms`,
+      `  marchRays:    ${timings.marchRaysMs.toFixed(2)}ms`,
+      `  renderBuffer: ${timings.renderToBufferMs.toFixed(2)}ms`,
+      `  TOTAL:        ${timings.totalMs.toFixed(2)}ms`,
+      "",
+      "-- WASM Metrics --",
+      `  totalSteps:   ${timings.wasmTotalSteps.toFixed(0)}`,
+      `  avgSteps:     ${timings.wasmAvgSteps.toFixed(1)}/batch`,
+      `  sdfCalls:     ${timings.wasmTotalSdfCalls.toFixed(0)} (march)`,
+      `  normalSdf:    ${timings.wasmNormalSdfCalls.toFixed(0)}`,
+      `  colorLookups: ${timings.wasmColorLookups.toFixed(0)}`,
+      `  hits/misses:  ${timings.wasmHits.toFixed(0)}/${timings.wasmMisses.toFixed(0)}`,
+      `  hitRate:      ${timings.wasmHitRate.toFixed(1)}%`,
+      "",
+      `Worst: ${worstFrameTime.toFixed(1)}ms | Median: ${medianFrameTime.toFixed(1)}ms`,
     ].join("\n");
   }
 
@@ -430,34 +767,46 @@ async function main(): Promise<void> {
     let t = 0;
 
     renderer.setFrameCallback(async (deltaTime) => {
-      const frameStart = performance.now();
-
       wasm.exports.compute_background(t);
       const bg: Vec3 = [wasm.bgColor[0]!, wasm.bgColor[1]!, wasm.bgColor[2]!];
       const bgRgba = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
       renderer.setBackgroundColor(bgRgba);
       canvas.frameBuffer.clear(bgRgba);
-      renderFrame(wasm, t, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
+      const timings = renderFrame(wasm, t, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
       t += deltaTime / 1000;
 
-      const frameTimeMs = performance.now() - frameStart;
-      updateStats(frameTimeMs);
+      updateStats(timings);
     });
 
     renderer.start();
   } else {
     // Single frame
-    const frameStart = performance.now();
     canvas.frameBuffer.clear(bgColor);
-    renderFrame(wasm, args.time, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
-    const frameTimeMs = performance.now() - frameStart;
+    const timings = renderFrame(wasm, args.time, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
 
     statsText.content = [
       "",
       `Resolution: ${nativeWidth}x${nativeHeight} (${scale}x)`,
-      `Frame: ${frameTimeMs.toFixed(1)}ms`,
-      `Worst: ${frameTimeMs.toFixed(1)}ms`,
-      `Median: ${frameTimeMs.toFixed(1)}ms`,
+      `Rays: ${nativeWidth * nativeHeight}`,
+      "",
+      "-- TS Timings --",
+      `  sceneData:    ${timings.sceneDataMs.toFixed(2)}ms`,
+      `  compileScene: ${timings.compileSceneMs.toFixed(2)}ms`,
+      `  loadScene:    ${timings.loadSceneMs.toFixed(2)}ms`,
+      `  rayGen:       ${timings.rayGenMs.toFixed(2)}ms`,
+      `  rayCopy:      ${timings.rayCopyMs.toFixed(2)}ms`,
+      `  marchRays:    ${timings.marchRaysMs.toFixed(2)}ms`,
+      `  renderBuffer: ${timings.renderToBufferMs.toFixed(2)}ms`,
+      `  TOTAL:        ${timings.totalMs.toFixed(2)}ms`,
+      "",
+      "-- WASM Metrics --",
+      `  totalSteps:   ${timings.wasmTotalSteps.toFixed(0)}`,
+      `  avgSteps:     ${timings.wasmAvgSteps.toFixed(1)}/batch`,
+      `  sdfCalls:     ${timings.wasmTotalSdfCalls.toFixed(0)} (march)`,
+      `  normalSdf:    ${timings.wasmNormalSdfCalls.toFixed(0)}`,
+      `  colorLookups: ${timings.wasmColorLookups.toFixed(0)}`,
+      `  hits/misses:  ${timings.wasmHits.toFixed(0)}/${timings.wasmMisses.toFixed(0)}`,
+      `  hitRate:      ${timings.wasmHitRate.toFixed(1)}%`,
     ].join("\n");
 
     await renderer.idle();
