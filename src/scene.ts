@@ -1,0 +1,163 @@
+/**
+ * Scene configuration - edit this to change the render.
+ */
+
+import { createNoise2D } from "simplex-noise";
+import type { SDF, Vec3 } from "./renderer";
+import { primitives } from "./renderer";
+
+// =============================================================================
+// Config
+// =============================================================================
+
+export const config = {
+  rayMarcher: {
+    maxSteps: 64,
+    maxDist: 100.0,
+    hitThreshold: 0.001,
+    normalEps: 0.001,
+  },
+  camera: {
+    eye: [0.0, 2.0, -8.0] as Vec3,
+    at: [0.0, 0.0, 0.0] as Vec3,
+    up: [0.0, 1.0, 0.0] as Vec3,
+    fov: 50,
+  },
+  render: {
+    width: 127,
+    height: 60,
+    output: "ascii" as "ascii" | "unicode" | "truecolor",
+    background: [0.0, 0.0, 0.0] as Vec3,
+  },
+  lighting: {
+    ambient: 0.1,
+    directional: {
+      direction: [1.0, 1.0, -1.0] as Vec3,
+      color: [1.0, 1.0, 1.0] as Vec3,
+      intensity: 1.0,
+    },
+    pointLights: [
+      {
+        position: [3, 3, -3] as Vec3,
+        color: [1, 0.8, 0.6] as Vec3,
+        intensity: 1.0,
+        radius: 8.0,
+      },
+    ],
+  },
+};
+
+export type Config = typeof config;
+
+// =============================================================================
+// Scene State (persistent across frames)
+// =============================================================================
+
+const SEED = 42;
+const NUM_OBJECTS = 8;
+const SMOOTH_K = 4.0;
+
+// Seeded random number generator
+function seededRandom(seed: number) {
+  return () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+}
+
+const rng = seededRandom(SEED);
+
+const basePositions: Vec3[] = [];
+const baseSizes: number[] = [];
+const phaseOffsets: number[] = [];
+const freqMultipliers: number[] = [];
+const noiseOffsets: Vec3[] = [];
+
+for (let i = 0; i < NUM_OBJECTS; i++) {
+  basePositions.push([
+    rng() * 4 - 2,
+    rng() * 4 - 2,
+    rng() * 4 - 2,
+  ]);
+  baseSizes.push(rng() + 1);
+  phaseOffsets.push(rng() * 2 * Math.PI);
+  freqMultipliers.push(rng() + 0.5);
+  noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
+}
+
+// Simplex noise
+const noise2D = createNoise2D(() => rng());
+
+function pnoise1(x: number, octaves: number = 1): number {
+  let value = 0;
+  let amplitude = 1;
+  let frequency = 1;
+  let maxValue = 0;
+
+  for (let i = 0; i < octaves; i++) {
+    value += noise2D(x * frequency, 0) * amplitude;
+    maxValue += amplitude;
+    amplitude *= 0.5;
+    frequency *= 2;
+  }
+
+  return value / maxValue;
+}
+
+// =============================================================================
+// Scene Definition
+// =============================================================================
+
+export interface SceneResult {
+  scene: Array<[SDF, Vec3]>;
+  overrides?: {
+    camera?: Partial<typeof config.camera>;
+    lighting?: Partial<typeof config.lighting>;
+  };
+}
+
+export function makeScene(
+  t: number,
+  prims: typeof primitives
+): SceneResult {
+  const { sphere, smoothUnion } = prims;
+
+  const driftSpeed = 0.5;
+  const driftScale = 10.0;
+  const sizeOscSpeed = 0.8;
+  const sizeOscAmount = 0.15;
+  const noiseSizeAmount = 0.1;
+
+  const shapes: SDF[] = [];
+
+  for (let i = 0; i < NUM_OBJECTS; i++) {
+    const [bx, by, bz] = basePositions[i]!;
+    const [nx, ny, nz] = noiseOffsets[i]!;
+
+    const dx = pnoise1(nx + t * driftSpeed, 2) * driftScale;
+    const dy = pnoise1(ny + t * driftSpeed, 2) * driftScale * 0.5;
+    const dz = pnoise1(nz + t * driftSpeed, 2) * driftScale;
+
+    const pos: Vec3 = [bx + dx, by + dy, bz + dz];
+
+    const phase = phaseOffsets[i]!;
+    const freq = freqMultipliers[i]!;
+    const osc = Math.sin(t * sizeOscSpeed * freq + phase) * sizeOscAmount;
+    const noiseSize = pnoise1(nx + t * 0.5, 1) * noiseSizeAmount;
+    const size = Math.max(0.1, baseSizes[i]! + osc + noiseSize);
+
+    shapes.push(sphere(size).translate(pos));
+  }
+
+  let combined = shapes[0]!;
+  for (let i = 1; i < shapes.length; i++) {
+    combined = smoothUnion(combined, shapes[i]!, SMOOTH_K);
+  }
+
+  const color: Vec3 = [0.9, 0.9, 0.9];
+
+  return {
+    scene: [[combined, color]],
+    overrides: { camera: { fov: 50 } },
+  };
+}
