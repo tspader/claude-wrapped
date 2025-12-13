@@ -110,6 +110,15 @@ for (let i = 0; i < SPHERES_PER_COLUMN; i++) {
 
 const NUM_OBJECTS = basePositions.length;
 
+// =============================================================================
+// Red Ball (separate from main blob)
+// =============================================================================
+
+const RED_BALL_COLOR: Vec3 = [180 / 255, 101 / 255, 111 / 255]; // indian_red
+const redBallBasePos: Vec3 = [COLUMN_X, 0, -2];
+const redBallRadius = SPHERE_RADIUS / 8;
+const redBallNoiseOffset: Vec3 = [rng() * 1000, rng() * 1000, rng() * 1000];
+
 // Simplex noise
 const noise2D = createNoise2D(() => rng());
 
@@ -135,6 +144,10 @@ function pnoise1(x: number, octaves: number = 1): number {
 
 export interface SceneResult {
   scene: Array<[SDF, Vec3]>;
+  /** Optional SDF for ray marching (e.g. smooth union). If not provided, renderer uses min() of scene SDFs. */
+  marchingSdf?: SDF;
+  /** Optional blend factor for color transitions between shapes. If provided, colors blend in transition zones using smooth union math. */
+  colorBlendK?: number;
   overrides?: {
     camera?: Partial<typeof config.camera>;
     lighting?: Partial<typeof config.lighting>;
@@ -179,10 +192,32 @@ export function makeScene(
     combined = smoothUnion(combined, shapes[i]!, SMOOTH_K);
   }
 
+
   const color: Vec3 = [0.388, 0.627, 0.533];
 
+  // Red ball (separate from main blob, same noise-based sway)
+  const [rbx, rby, rbz] = redBallBasePos;
+  const [rnx, rny, rnz] = redBallNoiseOffset;
+
+  const rbDx = pnoise1(rnx + t * driftSpeed, 2) * driftScale;
+  const rbDy = pnoise1(rny + t * driftSpeed, 2) * driftScale * 0.5;
+  const rbDz = pnoise1(rnz + t * driftSpeed, 2) * driftScale;
+
+  const redBallPos: Vec3 = [rbx + rbDx, rby + rbDy, rbz + rbDz];
+  const redBallSize = Math.max(0.1, redBallRadius);
+  const redBall = sphere(redBallSize).translate(redBallPos);
+
+  // Keep green blob separate for color lookup, merge everything for marching
+  const greenBlob = combined;
+  const fullMerged = smoothUnion(greenBlob, redBall, 1.0);
+
   return {
-    scene: [[combined, color]],
+    scene: [
+      [greenBlob, color],
+      [redBall, RED_BALL_COLOR],
+    ],
+    marchingSdf: fullMerged,
+    colorBlendK: 0.5,
     overrides: { camera: { fov: 45 } },
   };
 }

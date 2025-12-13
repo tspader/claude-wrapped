@@ -63,18 +63,20 @@ function renderFrame(
   const { origins, directions } = camera.generateRays(width, height);
   const nRays = origins.length;
 
-  // Combined SDF
-  function combinedSdf(p: Vec3): number {
-    let minDist = Infinity;
-    for (const [sdf] of scene) {
-      const d = sdf.evaluate(p);
-      minDist = Math.min(minDist, d);
-    }
-    return minDist;
-  }
+  // Combined SDF for marching - use marchingSdf if provided, otherwise min() of scene SDFs
+  const marchSdf = result.marchingSdf
+    ? (p: Vec3) => result.marchingSdf!.evaluate(p)
+    : (p: Vec3) => {
+        let minDist = Infinity;
+        for (const [sdf] of scene) {
+          const d = sdf.evaluate(p);
+          minDist = Math.min(minDist, d);
+        }
+        return minDist;
+      };
 
   // March rays
-  const { hit, positions } = marcher.march(combinedSdf, origins, directions);
+  const { hit, positions } = marcher.march(marchSdf, origins, directions);
 
   // Compute colors
   const colors: Vec3[] = new Array(nRays);
@@ -91,26 +93,64 @@ function renderFrame(
   if (hitIndices.length > 0) {
     const hitPositions = hitIndices.map((i) => positions[i]!);
 
-    // Determine base color by finding closest shape
+    // Determine base color by finding closest shape (with optional blending)
     const hitColors: Vec3[] = new Array(hitIndices.length);
-    const minDists: number[] = new Array(hitIndices.length).fill(Infinity);
+    const blendK = result.colorBlendK;
 
-    for (let hi = 0; hi < hitIndices.length; hi++) {
-      hitColors[hi] = [0, 0, 0];
-    }
-
-    for (const [sdf, color] of scene) {
+    if (blendK !== undefined && blendK > 0) {
+      // Blend colors using smooth union math
       for (let hi = 0; hi < hitIndices.length; hi++) {
-        const d = sdf.evaluate(hitPositions[hi]!);
-        if (d < minDists[hi]!) {
-          hitColors[hi] = [...color];
-          minDists[hi] = d;
+        const hitPos = hitPositions[hi]!;
+        
+        // Compute distances to all shapes
+        const distances: number[] = [];
+        const shapeColors: Vec3[] = [];
+        for (const [sdf, color] of scene) {
+          distances.push(sdf.evaluate(hitPos));
+          shapeColors.push(color);
+        }
+
+        // Blend colors based on relative distances
+        // Use exponential weights similar to smooth-min
+        let totalWeight = 0;
+        const weights: number[] = [];
+        for (const d of distances) {
+          const w = Math.exp(-d / blendK);
+          weights.push(w);
+          totalWeight += w;
+        }
+
+        // Weighted average of colors
+        let r = 0, g = 0, b = 0;
+        for (let i = 0; i < shapeColors.length; i++) {
+          const w = weights[i]! / totalWeight;
+          r += shapeColors[i]![0] * w;
+          g += shapeColors[i]![1] * w;
+          b += shapeColors[i]![2] * w;
+        }
+        hitColors[hi] = [r, g, b];
+      }
+    } else {
+      // Winner-takes-all (original behavior)
+      const minDists: number[] = new Array(hitIndices.length).fill(Infinity);
+
+      for (let hi = 0; hi < hitIndices.length; hi++) {
+        hitColors[hi] = [0, 0, 0];
+      }
+
+      for (const [sdf, color] of scene) {
+        for (let hi = 0; hi < hitIndices.length; hi++) {
+          const d = sdf.evaluate(hitPositions[hi]!);
+          if (d < minDists[hi]!) {
+            hitColors[hi] = [...color];
+            minDists[hi] = d;
+          }
         }
       }
     }
 
-    // Compute normals
-    const normals = marcher.estimateNormals(combinedSdf, hitPositions);
+    // Compute normals (use marching SDF for correct merged surface normals)
+    const normals = marcher.estimateNormals(marchSdf, hitPositions);
 
     // Compute lighting
     for (let hi = 0; hi < hitIndices.length; hi++) {
@@ -324,7 +364,7 @@ async function main(): Promise<void> {
     border: true,
     borderStyle: "double",
     borderColor: "#FFFFFF",
-    backgroundColor: RGBA.fromValues(0, 0, 0, 0.7),
+    backgroundColor: RGBA.fromValues(0, 0, 0, 0),
   });
 
   const titleText = new TextRenderable(renderer, {
@@ -357,10 +397,10 @@ async function main(): Promise<void> {
     // Single frame
     canvas.frameBuffer.clear(bgColor);
     renderFrame(args.time, width, height, canvas.frameBuffer, bg, lighting);
-    
+
     // Wait for render to complete then exit
     await renderer.idle();
-    
+
     // Small delay to ensure output is flushed
     await new Promise((resolve) => setTimeout(resolve, 100));
     renderer.destroy();
