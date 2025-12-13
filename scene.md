@@ -32,7 +32,7 @@ uint32_t count;      // number of shapes
 float smooth_k;      // smooth union factor
 ```
 
-**Checkpoint 1:** Add `set_scene()` API to C, hardcode test call from JS with 3 spheres at different positions/colors, verify it renders.
+**Checkpoint 1:** Add `set_scene()` API to C, hardcode test call from JS with 2 spheres at different positions/colors, verify it renders.
 
 ## Phase 2: Scene Compilation in TypeScript
 
@@ -151,7 +151,7 @@ function compileScene(def: SceneDefinition, t: number): FlatScene {
   for (let i = 0; i < n; i++) {
     const obj = def.objects[i];
     const pos = obj.animation ? obj.animation(t, obj.position) : obj.position;
-    
+
     types[i] = obj.shape.type;
     params.set(obj.shape.params, i * 4);
     positions.set(pos, i * 3);
@@ -179,7 +179,7 @@ Animation state (RNG seeds, noise offsets) initialized once at scene creation:
 function createBlobScene(seed: number): SceneDefinition {
   const rng = seededRandom(seed);
   const noiseOffsets = generateNoiseOffsets(rng, 8);
-  
+
   return {
     objects: [...],  // closures capture noiseOffsets
     smoothK: 2.0,
@@ -190,5 +190,5 @@ function createBlobScene(seed: number): SceneDefinition {
 ## Files
 
 - `src/wasm/renderer.c` - WASM raymarcher with `set_scene()` API
-- `src/scene.ts` - SceneDefinition types and scene constructors  
+- `src/scene.ts` - SceneDefinition types and scene constructors
 - `src/main-wasm.ts` - compileScene() and render loop

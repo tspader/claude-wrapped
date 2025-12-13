@@ -95,6 +95,12 @@ export const ShapeType = {
   BOX: 1,
 } as const;
 
+// Blend mode for shapes within a group
+export const BlendMode = {
+  HARD: 0,    // min() - distinct shapes
+  SMOOTH: 1, // smooth union - blobby
+} as const;
+
 export interface ShapeDef {
   type: number;           // ShapeType
   params: number[];       // [radius] for sphere, [w,h,d] for box
@@ -104,6 +110,11 @@ export interface ShapeDef {
 export interface ObjectDef {
   shape: ShapeDef;
   position: Vec3;
+  group: number;          // group ID for hierarchical blending
+}
+
+export interface GroupDef {
+  blendMode: number;      // BlendMode - how shapes blend within this group
 }
 
 export interface FlatScene {
@@ -111,7 +122,10 @@ export interface FlatScene {
   params: Float32Array;   // 4 floats per shape (padded)
   positions: Float32Array; // 3 floats per shape
   colors: Float32Array;    // 3 floats per shape
+  groups: Uint8Array;      // group ID per shape
+  groupBlendModes: Uint8Array; // blend mode per group
   count: number;
+  groupCount: number;
   smoothK: number;
 }
 
@@ -257,7 +271,7 @@ const CLAUDE_COLOR: Vec3 = [0.85, 0.45, 0.35];
  * Returns Claude logo as 7 box ObjectDefs (body, 2 arms, 4 legs).
  * Position is the center of the model.
  */
-function getClaudeBoxes(position: Vec3, scale: number = 1): ObjectDef[] {
+function getClaudeBoxes(position: Vec3, scale: number = 1, group: number = 0): ObjectDef[] {
   const [px, py, pz] = position;
 
   // Body: wide and squat (roughly 2:1 width:height)
@@ -285,36 +299,43 @@ function getClaudeBoxes(position: Vec3, scale: number = 1): ObjectDef[] {
     {
       shape: { type: ShapeType.BOX, params: [bodyW, bodyH, bodyD], color: CLAUDE_COLOR },
       position: [px, py, pz],
+      group,
     },
     // Left arm
     {
       shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
       position: [px - armX, py + armY, pz],
+      group,
     },
     // Right arm
     {
       shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
       position: [px + armX, py + armY, pz],
+      group,
     },
     // Left-left leg
     {
       shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
       position: [px - legX - legSpacing / 2, py + legY, pz],
+      group,
     },
     // Left-right leg
     {
       shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
       position: [px - legX + legSpacing / 2, py + legY, pz],
+      group,
     },
     // Right-left leg
     {
       shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
       position: [px + legX - legSpacing / 2, py + legY, pz],
+      group,
     },
     // Right-right leg
     {
       shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
       position: [px + legX + legSpacing / 2, py + legY, pz],
+      group,
     },
   ];
 }
@@ -453,6 +474,18 @@ export function makeScene(
 // WASM Scene Data (flat arrays for C)
 // =============================================================================
 
+// Group IDs for scene objects
+export const SceneGroups = {
+  BLOBS: 0,   // blob columns - smooth union internally
+  CLAUDE: 1,  // claude boxes - hard union internally
+} as const;
+
+// Group definitions (blend mode per group)
+export const sceneGroupDefs: GroupDef[] = [
+  { blendMode: BlendMode.SMOOTH }, // BLOBS - smooth union for blobby look
+  { blendMode: BlendMode.HARD },   // CLAUDE - hard union for distinct limbs
+];
+
 /**
  * Returns scene as ObjectDef[] - plain data, no SDF functions.
  * Mirrors makeScene() logic but outputs data instead of closures.
@@ -471,7 +504,7 @@ export function makeSceneData(t: number): ObjectDef[] {
 
   const objects: ObjectDef[] = [];
 
-  // Blob spheres
+  // Blob spheres (group 0 - smooth union)
   for (let i = 0; i < basePositions.length; i++) {
     const [bx, by, bz] = basePositions[i]!;
     const [nx, ny, nz] = noiseOffsets[i]!;
@@ -491,10 +524,11 @@ export function makeSceneData(t: number): ObjectDef[] {
     objects.push({
       shape: { type: ShapeType.SPHERE, params: [radius], color: colors.blob },
       position: pos,
+      group: SceneGroups.BLOBS,
     });
   }
 
-  // Claude (7 boxes)
+  // Claude (7 boxes) - group 1 - hard union for distinct limbs
   const claudeBasePos = getClaudePosition(t);
   const [cx, cy, cz] = claudeBasePos;
   const [cnx, cny, cnz] = claudeNoiseOffset;
@@ -506,7 +540,7 @@ export function makeSceneData(t: number): ObjectDef[] {
 
   const claudePos: Vec3 = [cx + cDx, cy + cDy, cz + cDz];
   const claudeScale = 2.0;
-  objects.push(...getClaudeBoxes(claudePos, claudeScale));
+  objects.push(...getClaudeBoxes(claudePos, claudeScale, SceneGroups.CLAUDE));
 
   return objects;
 }
@@ -514,31 +548,53 @@ export function makeSceneData(t: number): ObjectDef[] {
 /**
  * Compiles ObjectDef[] to flat typed arrays for WASM.
  */
-export function compileScene(objects: ObjectDef[], smoothK: number): FlatScene {
+export function compileScene(
+  objects: ObjectDef[],
+  groupDefs: GroupDef[],
+  smoothK: number
+): FlatScene {
   const n = objects.length;
   const types = new Uint8Array(n);
   const params = new Float32Array(n * 4);  // 4 floats per shape (padded)
   const positions = new Float32Array(n * 3);
   const colors = new Float32Array(n * 3);
+  const groups = new Uint8Array(n);
 
   for (let i = 0; i < n; i++) {
     const obj = objects[i]!;
-    
+
     types[i] = obj.shape.type;
-    
+    groups[i] = obj.group;
+
     // Copy params (up to 4, rest stays 0)
     for (let j = 0; j < obj.shape.params.length && j < 4; j++) {
       params[i * 4 + j] = obj.shape.params[j]!;
     }
-    
+
     positions[i * 3] = obj.position[0];
     positions[i * 3 + 1] = obj.position[1];
     positions[i * 3 + 2] = obj.position[2];
-    
+
     colors[i * 3] = obj.shape.color[0];
     colors[i * 3 + 1] = obj.shape.color[1];
     colors[i * 3 + 2] = obj.shape.color[2];
   }
 
-  return { types, params, positions, colors, count: n, smoothK };
+  // Build group blend modes array
+  const groupBlendModes = new Uint8Array(groupDefs.length);
+  for (let g = 0; g < groupDefs.length; g++) {
+    groupBlendModes[g] = groupDefs[g]!.blendMode;
+  }
+
+  return {
+    types,
+    params,
+    positions,
+    colors,
+    groups,
+    groupBlendModes,
+    count: n,
+    groupCount: groupDefs.length,
+    smoothK,
+  };
 }

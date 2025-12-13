@@ -14,7 +14,7 @@ import type { OptimizedBuffer } from "@opentui/core";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { makeSceneData, compileScene, config, type FlatScene } from "./scene";
+import { makeSceneData, compileScene, config, sceneGroupDefs, type FlatScene } from "./scene";
 
 // =============================================================================
 // WASM Module Interface
@@ -38,11 +38,15 @@ interface WasmExports {
   get_shape_params_ptr: () => number;
   get_shape_positions_ptr: () => number;
   get_shape_colors_ptr: () => number;
+  get_shape_groups_ptr: () => number;
+  get_group_blend_modes_ptr: () => number;
   // Functions
   get_max_rays: () => number;
   get_max_shapes: () => number;
+  get_max_groups: () => number;
   set_ray_count: (count: number) => void;
   set_scene: (count: number, smoothK: number) => void;
+  set_groups: (count: number) => void;
   compute_background: (time: number) => void;
   march_rays: () => void;
 }
@@ -51,6 +55,7 @@ interface WasmRenderer {
   exports: WasmExports;
   maxRays: number;
   maxShapes: number;
+  maxGroups: number;
   // Ray buffer views
   rayOx: Float32Array;
   rayOy: Float32Array;
@@ -67,6 +72,8 @@ interface WasmRenderer {
   shapeParams: Float32Array;
   shapePositions: Float32Array;
   shapeColors: Float32Array;
+  shapeGroups: Uint8Array;
+  groupBlendModes: Uint8Array;
 }
 
 async function loadWasm(): Promise<WasmRenderer> {
@@ -79,11 +86,13 @@ async function loadWasm(): Promise<WasmRenderer> {
   const memory = exports.memory;
   const maxRays = exports.get_max_rays();
   const maxShapes = exports.get_max_shapes();
+  const maxGroups = exports.get_max_groups();
 
   return {
     exports,
     maxRays,
     maxShapes,
+    maxGroups,
     // Ray buffers
     rayOx: new Float32Array(memory.buffer, exports.get_ray_ox_ptr(), maxRays),
     rayOy: new Float32Array(memory.buffer, exports.get_ray_oy_ptr(), maxRays),
@@ -100,6 +109,8 @@ async function loadWasm(): Promise<WasmRenderer> {
     shapeParams: new Float32Array(memory.buffer, exports.get_shape_params_ptr(), maxShapes * 4),
     shapePositions: new Float32Array(memory.buffer, exports.get_shape_positions_ptr(), maxShapes * 3),
     shapeColors: new Float32Array(memory.buffer, exports.get_shape_colors_ptr(), maxShapes * 3),
+    shapeGroups: new Uint8Array(memory.buffer, exports.get_shape_groups_ptr(), maxShapes),
+    groupBlendModes: new Uint8Array(memory.buffer, exports.get_group_blend_modes_ptr(), maxGroups),
   };
 }
 
@@ -112,14 +123,21 @@ function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
     console.error(`Too many shapes: ${scene.count} > ${wasm.maxShapes}`);
     return;
   }
+  if (scene.groupCount > wasm.maxGroups) {
+    console.error(`Too many groups: ${scene.groupCount} > ${wasm.maxGroups}`);
+    return;
+  }
 
   // Copy typed arrays directly to WASM buffers
   wasm.shapeTypes.set(scene.types);
   wasm.shapeParams.set(scene.params);
   wasm.shapePositions.set(scene.positions);
   wasm.shapeColors.set(scene.colors);
+  wasm.shapeGroups.set(scene.groups);
+  wasm.groupBlendModes.set(scene.groupBlendModes);
 
   wasm.exports.set_scene(scene.count, scene.smoothK);
+  wasm.exports.set_groups(scene.groupCount);
 }
 
 // =============================================================================
@@ -143,7 +161,7 @@ function renderFrame(
 
   // Compile scene at time t and load to WASM
   const objects = makeSceneData(t);
-  const flatScene = compileScene(objects, config.scene.smoothK);
+  const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
   loadScene(wasm, flatScene);
 
   // Generate rays using JS Camera

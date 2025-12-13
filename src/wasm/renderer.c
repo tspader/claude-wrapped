@@ -48,8 +48,14 @@ static u8 shape_types[MAX_SHAPES];           // SHAPE_SPHERE, SHAPE_BOX
 static f32 shape_params[MAX_SHAPES * 4];     // [radius] or [w,h,d,_] per shape
 static f32 shape_positions[MAX_SHAPES * 3];  // x,y,z per shape
 static f32 shape_colors[MAX_SHAPES * 3];     // r,g,b per shape
+static u8 shape_groups[MAX_SHAPES];          // group ID per shape
 static u32 shape_count = 0;
 static f32 smooth_k = 0.5f;
+
+// Group data
+#define MAX_GROUPS 8
+static u8 group_blend_mode[MAX_GROUPS];      // 0 = hard union (min), 1 = smooth union
+static u32 group_count = 0;
 
 // Current ray count
 static u32 ray_count = 0;
@@ -116,45 +122,63 @@ static f32 sdf_smooth_union(f32 d1, f32 d2, f32 k) {
 // Dynamic Scene SDF (scalar - for normal estimation)
 // =============================================================================
 
+// Evaluate single shape SDF
+static f32 eval_shape_scalar(u32 i, f32 px, f32 py, f32 pz) {
+    u8 type = shape_types[i];
+    f32 cx = shape_positions[i * 3];
+    f32 cy = shape_positions[i * 3 + 1];
+    f32 cz = shape_positions[i * 3 + 2];
+    
+    if (type == SHAPE_SPHERE) {
+        f32 r = shape_params[i * 4];
+        return sdf_sphere_scalar(px, py, pz, cx, cy, cz, r);
+    } else {
+        f32 bx = shape_params[i * 4];
+        f32 by = shape_params[i * 4 + 1];
+        f32 bz = shape_params[i * 4 + 2];
+        return sdf_box_scalar(px, py, pz, cx, cy, cz, bx, by, bz);
+    }
+}
+
 static f32 scene_sdf_scalar(f32 px, f32 py, f32 pz) {
     if (shape_count == 0) return MAX_DIST;
     
-    // Evaluate first shape
-    f32 result;
-    u8 type0 = shape_types[0];
-    f32 cx0 = shape_positions[0];
-    f32 cy0 = shape_positions[1];
-    f32 cz0 = shape_positions[2];
+    // Hierarchical evaluation: first evaluate each group, then combine groups
+    f32 group_dists[MAX_GROUPS];
+    u8 group_initialized[MAX_GROUPS] = {0};
     
-    if (type0 == SHAPE_SPHERE) {
-        f32 r = shape_params[0];
-        result = sdf_sphere_scalar(px, py, pz, cx0, cy0, cz0, r);
-    } else {
-        f32 bx = shape_params[0];
-        f32 by = shape_params[1];
-        f32 bz = shape_params[2];
-        result = sdf_box_scalar(px, py, pz, cx0, cy0, cz0, bx, by, bz);
+    // Pass 1: Evaluate shapes within each group using group's blend mode
+    for (u32 i = 0; i < shape_count; i++) {
+        u8 g = shape_groups[i];
+        if (g >= group_count) g = 0;  // fallback to group 0
+        
+        f32 d = eval_shape_scalar(i, px, py, pz);
+        
+        if (!group_initialized[g]) {
+            group_dists[g] = d;
+            group_initialized[g] = 1;
+        } else {
+            // group_blend_mode: 0 = hard union (min), 1 = smooth union
+            if (group_blend_mode[g] == 0) {
+                group_dists[g] = minf(group_dists[g], d);
+            } else {
+                group_dists[g] = sdf_smooth_union(group_dists[g], d, smooth_k);
+            }
+        }
     }
     
-    // Smooth union with remaining shapes
-    for (u32 i = 1; i < shape_count; i++) {
-        u8 type = shape_types[i];
-        f32 cx = shape_positions[i * 3];
-        f32 cy = shape_positions[i * 3 + 1];
-        f32 cz = shape_positions[i * 3 + 2];
-        
-        f32 d;
-        if (type == SHAPE_SPHERE) {
-            f32 r = shape_params[i * 4];
-            d = sdf_sphere_scalar(px, py, pz, cx, cy, cz, r);
-        } else {
-            f32 bx = shape_params[i * 4];
-            f32 by = shape_params[i * 4 + 1];
-            f32 bz = shape_params[i * 4 + 2];
-            d = sdf_box_scalar(px, py, pz, cx, cy, cz, bx, by, bz);
+    // Pass 2: Combine all groups with smooth union
+    f32 result = MAX_DIST;
+    u8 first = 1;
+    for (u32 g = 0; g < group_count; g++) {
+        if (group_initialized[g]) {
+            if (first) {
+                result = group_dists[g];
+                first = 0;
+            } else {
+                result = sdf_smooth_union(result, group_dists[g], smooth_k);
+            }
         }
-        
-        result = sdf_smooth_union(result, d, smooth_k);
     }
     
     return result;
@@ -216,47 +240,66 @@ static v128_t sdf_smooth_union_simd(v128_t d1, v128_t d2, v128_t k) {
 // Dynamic Scene SDF (SIMD - 4 points at once)
 // =============================================================================
 
+// Evaluate single shape SDF (SIMD)
+static v128_t eval_shape_simd(u32 i, v128_t px, v128_t py, v128_t pz) {
+    u8 type = shape_types[i];
+    v128_t cx = wasm_f32x4_splat(shape_positions[i * 3]);
+    v128_t cy = wasm_f32x4_splat(shape_positions[i * 3 + 1]);
+    v128_t cz = wasm_f32x4_splat(shape_positions[i * 3 + 2]);
+    
+    if (type == SHAPE_SPHERE) {
+        v128_t r = wasm_f32x4_splat(shape_params[i * 4]);
+        return sdf_sphere_simd(px, py, pz, cx, cy, cz, r);
+    } else {
+        v128_t bx = wasm_f32x4_splat(shape_params[i * 4]);
+        v128_t by = wasm_f32x4_splat(shape_params[i * 4 + 1]);
+        v128_t bz = wasm_f32x4_splat(shape_params[i * 4 + 2]);
+        return sdf_box_simd(px, py, pz, cx, cy, cz, bx, by, bz);
+    }
+}
+
 static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
     if (shape_count == 0) return wasm_f32x4_splat(MAX_DIST);
     
     v128_t k = wasm_f32x4_splat(smooth_k);
+    v128_t max_dist = wasm_f32x4_splat(MAX_DIST);
     
-    // Evaluate first shape
-    v128_t result;
-    u8 type0 = shape_types[0];
-    v128_t cx0 = wasm_f32x4_splat(shape_positions[0]);
-    v128_t cy0 = wasm_f32x4_splat(shape_positions[1]);
-    v128_t cz0 = wasm_f32x4_splat(shape_positions[2]);
+    // Hierarchical evaluation: first evaluate each group, then combine groups
+    v128_t group_dists[MAX_GROUPS];
+    u8 group_initialized[MAX_GROUPS] = {0};
     
-    if (type0 == SHAPE_SPHERE) {
-        v128_t r = wasm_f32x4_splat(shape_params[0]);
-        result = sdf_sphere_simd(px, py, pz, cx0, cy0, cz0, r);
-    } else {
-        v128_t bx = wasm_f32x4_splat(shape_params[0]);
-        v128_t by = wasm_f32x4_splat(shape_params[1]);
-        v128_t bz = wasm_f32x4_splat(shape_params[2]);
-        result = sdf_box_simd(px, py, pz, cx0, cy0, cz0, bx, by, bz);
+    // Pass 1: Evaluate shapes within each group using group's blend mode
+    for (u32 i = 0; i < shape_count; i++) {
+        u8 g = shape_groups[i];
+        if (g >= group_count) g = 0;  // fallback to group 0
+        
+        v128_t d = eval_shape_simd(i, px, py, pz);
+        
+        if (!group_initialized[g]) {
+            group_dists[g] = d;
+            group_initialized[g] = 1;
+        } else {
+            // group_blend_mode: 0 = hard union (min), 1 = smooth union
+            if (group_blend_mode[g] == 0) {
+                group_dists[g] = wasm_f32x4_min(group_dists[g], d);
+            } else {
+                group_dists[g] = sdf_smooth_union_simd(group_dists[g], d, k);
+            }
+        }
     }
     
-    // Smooth union with remaining shapes
-    for (u32 i = 1; i < shape_count; i++) {
-        u8 type = shape_types[i];
-        v128_t cx = wasm_f32x4_splat(shape_positions[i * 3]);
-        v128_t cy = wasm_f32x4_splat(shape_positions[i * 3 + 1]);
-        v128_t cz = wasm_f32x4_splat(shape_positions[i * 3 + 2]);
-        
-        v128_t d;
-        if (type == SHAPE_SPHERE) {
-            v128_t r = wasm_f32x4_splat(shape_params[i * 4]);
-            d = sdf_sphere_simd(px, py, pz, cx, cy, cz, r);
-        } else {
-            v128_t bx = wasm_f32x4_splat(shape_params[i * 4]);
-            v128_t by = wasm_f32x4_splat(shape_params[i * 4 + 1]);
-            v128_t bz = wasm_f32x4_splat(shape_params[i * 4 + 2]);
-            d = sdf_box_simd(px, py, pz, cx, cy, cz, bx, by, bz);
+    // Pass 2: Combine all groups with smooth union
+    v128_t result = max_dist;
+    u8 first = 1;
+    for (u32 g = 0; g < group_count; g++) {
+        if (group_initialized[g]) {
+            if (first) {
+                result = group_dists[g];
+                first = 0;
+            } else {
+                result = sdf_smooth_union_simd(result, group_dists[g], k);
+            }
         }
-        
-        result = sdf_smooth_union_simd(result, d, k);
     }
     
     return result;
@@ -319,6 +362,8 @@ u8* get_shape_types_ptr(void) { return shape_types; }
 f32* get_shape_params_ptr(void) { return shape_params; }
 f32* get_shape_positions_ptr(void) { return shape_positions; }
 f32* get_shape_colors_ptr(void) { return shape_colors; }
+u8* get_shape_groups_ptr(void) { return shape_groups; }
+u8* get_group_blend_modes_ptr(void) { return group_blend_mode; }
 
 void set_ray_count(u32 count) {
     ray_count = count < MAX_RAYS ? count : MAX_RAYS;
@@ -329,7 +374,12 @@ void set_scene(u32 count, f32 k) {
     smooth_k = k;
 }
 
+void set_groups(u32 count) {
+    group_count = count < MAX_GROUPS ? count : MAX_GROUPS;
+}
+
 u32 get_max_shapes(void) { return MAX_SHAPES; }
+u32 get_max_groups(void) { return MAX_GROUPS; }
 
 void compute_background(f32 time) {
     f32 base_r = 0.02f;
