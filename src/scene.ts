@@ -87,6 +87,35 @@ export const config = {
 export type Config = typeof config;
 
 // =============================================================================
+// WASM Scene Data Types
+// =============================================================================
+
+export const ShapeType = {
+  SPHERE: 0,
+  BOX: 1,
+} as const;
+
+export interface ShapeDef {
+  type: number;           // ShapeType
+  params: number[];       // [radius] for sphere, [w,h,d] for box
+  color: Vec3;
+}
+
+export interface ObjectDef {
+  shape: ShapeDef;
+  position: Vec3;
+}
+
+export interface FlatScene {
+  types: Uint8Array;
+  params: Float32Array;   // 4 floats per shape (padded)
+  positions: Float32Array; // 3 floats per shape
+  colors: Float32Array;    // 3 floats per shape
+  count: number;
+  smoothK: number;
+}
+
+// =============================================================================
 // Scene State (persistent across frames)
 // =============================================================================
 
@@ -225,6 +254,72 @@ export function getClaudePosition(t: number): Vec3 {
 const CLAUDE_COLOR: Vec3 = [0.85, 0.45, 0.35];
 
 /**
+ * Returns Claude logo as 7 box ObjectDefs (body, 2 arms, 4 legs).
+ * Position is the center of the model.
+ */
+function getClaudeBoxes(position: Vec3, scale: number = 1): ObjectDef[] {
+  const [px, py, pz] = position;
+
+  // Body: wide and squat (roughly 2:1 width:height)
+  const bodyW = 0.7 * scale;
+  const bodyH = 0.28 * scale;
+  const bodyD = 0.25 * scale;
+
+  // Arms: short stubby protrusions
+  const armW = 0.2 * scale;
+  const armH = 0.15 * scale;
+  const armD = 0.18 * scale;
+  const armY = 0.0; // centered vertically on body
+  const armX = bodyW / 2 + armW / 2 - 0.03 * scale;
+
+  // Legs: positioned at outer edges of body
+  const legW = 0.07 * scale;
+  const legH = 0.22 * scale;
+  const legD = 0.12 * scale;
+  const legY = -bodyH / 2 - legH / 2 + 0.04 * scale;
+  const legSpacing = 0.14 * scale; // gap between legs in a pair
+  const legX = bodyW / 2 - 0.12 * scale; // align with body edges
+
+  return [
+    // Body
+    {
+      shape: { type: ShapeType.BOX, params: [bodyW, bodyH, bodyD], color: CLAUDE_COLOR },
+      position: [px, py, pz],
+    },
+    // Left arm
+    {
+      shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
+      position: [px - armX, py + armY, pz],
+    },
+    // Right arm
+    {
+      shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
+      position: [px + armX, py + armY, pz],
+    },
+    // Left-left leg
+    {
+      shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
+      position: [px - legX - legSpacing / 2, py + legY, pz],
+    },
+    // Left-right leg
+    {
+      shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
+      position: [px - legX + legSpacing / 2, py + legY, pz],
+    },
+    // Right-left leg
+    {
+      shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
+      position: [px + legX - legSpacing / 2, py + legY, pz],
+    },
+    // Right-right leg
+    {
+      shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
+      position: [px + legX + legSpacing / 2, py + legY, pz],
+    },
+  ];
+}
+
+/**
  * Creates a Claude logo SDF at origin, facing -Z (towards camera).
  * Scale parameter controls overall size (1.0 = ~1 unit tall).
  *
@@ -354,4 +449,96 @@ export function makeScene(
   };
 }
 
+// =============================================================================
+// WASM Scene Data (flat arrays for C)
+// =============================================================================
 
+/**
+ * Returns scene as ObjectDef[] - plain data, no SDF functions.
+ * Mirrors makeScene() logic but outputs data instead of closures.
+ */
+export function makeSceneData(t: number): ObjectDef[] {
+  const { animation, colors, claude: claudeCfg } = config.scene;
+  const { driftSpeed, driftScale, sizeOscSpeed, sizeOscAmount, noiseSizeAmount } = animation;
+  const {
+    basePositions,
+    baseSizes,
+    phaseOffsets,
+    freqMultipliers,
+    noiseOffsets,
+    claudeNoiseOffset,
+  } = sceneState;
+
+  const objects: ObjectDef[] = [];
+
+  // Blob spheres
+  for (let i = 0; i < basePositions.length; i++) {
+    const [bx, by, bz] = basePositions[i]!;
+    const [nx, ny, nz] = noiseOffsets[i]!;
+
+    const dx = pnoise1(nx + t * driftSpeed, 2) * driftScale;
+    const dy = pnoise1(ny + t * driftSpeed, 2) * driftScale * 0.5;
+    const dz = pnoise1(nz + t * driftSpeed, 2) * driftScale;
+
+    const pos: Vec3 = [bx + dx, by + dy, bz + dz];
+
+    const phase = phaseOffsets[i]!;
+    const freq = freqMultipliers[i]!;
+    const osc = Math.sin(t * sizeOscSpeed * freq + phase) * sizeOscAmount;
+    const noiseSize = pnoise1(nx + t * 0.5, 1) * noiseSizeAmount;
+    const radius = Math.max(0.1, baseSizes[i]! + osc + noiseSize);
+
+    objects.push({
+      shape: { type: ShapeType.SPHERE, params: [radius], color: colors.blob },
+      position: pos,
+    });
+  }
+
+  // Claude (7 boxes)
+  const claudeBasePos = getClaudePosition(t);
+  const [cx, cy, cz] = claudeBasePos;
+  const [cnx, cny, cnz] = claudeNoiseOffset;
+
+  const noiseScale = claudeCfg.noiseScale;
+  const cDx = pnoise1(cnx + t * driftSpeed, 2) * driftScale * noiseScale;
+  const cDy = pnoise1(cny + t * driftSpeed, 2) * driftScale * noiseScale * 0.67;
+  const cDz = pnoise1(cnz + t * driftSpeed, 2) * driftScale * noiseScale;
+
+  const claudePos: Vec3 = [cx + cDx, cy + cDy, cz + cDz];
+  const claudeScale = 2.0;
+  objects.push(...getClaudeBoxes(claudePos, claudeScale));
+
+  return objects;
+}
+
+/**
+ * Compiles ObjectDef[] to flat typed arrays for WASM.
+ */
+export function compileScene(objects: ObjectDef[], smoothK: number): FlatScene {
+  const n = objects.length;
+  const types = new Uint8Array(n);
+  const params = new Float32Array(n * 4);  // 4 floats per shape (padded)
+  const positions = new Float32Array(n * 3);
+  const colors = new Float32Array(n * 3);
+
+  for (let i = 0; i < n; i++) {
+    const obj = objects[i]!;
+    
+    types[i] = obj.shape.type;
+    
+    // Copy params (up to 4, rest stays 0)
+    for (let j = 0; j < obj.shape.params.length && j < 4; j++) {
+      params[i * 4 + j] = obj.shape.params[j]!;
+    }
+    
+    positions[i * 3] = obj.position[0];
+    positions[i * 3 + 1] = obj.position[1];
+    positions[i * 3 + 2] = obj.position[2];
+    
+    colors[i * 3] = obj.shape.color[0];
+    colors[i * 3 + 1] = obj.shape.color[1];
+    colors[i * 3 + 2] = obj.shape.color[2];
+  }
+
+  return { types, params, positions, colors, count: n, smoothK };
+}

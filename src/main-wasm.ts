@@ -14,6 +14,7 @@ import type { OptimizedBuffer } from "@opentui/core";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { makeSceneData, compileScene, config, type FlatScene } from "./scene";
 
 // =============================================================================
 // WASM Module Interface
@@ -103,50 +104,22 @@ async function loadWasm(): Promise<WasmRenderer> {
 }
 
 // =============================================================================
-// Shape Types (must match C enum)
+// Scene Loading from compiled FlatScene
 // =============================================================================
 
-const ShapeType = {
-  SPHERE: 0,
-  BOX: 1,
-} as const;
-
-// =============================================================================
-// Test Scene: 3 spheres with different colors
-// =============================================================================
-
-function setTestScene(wasm: WasmRenderer): void {
-  // 3 spheres: red left, green center, blue right
-  const shapes: Array<{
-    type: number;
-    params: [number, number, number, number];
-    pos: Vec3;
-    color: Vec3;
-  }> = [
-    { type: ShapeType.SPHERE, params: [1.0, 0, 0, 0], pos: [-2.5, 0, 0], color: [0.8, 0.2, 0.2] },
-    { type: ShapeType.SPHERE, params: [1.2, 0, 0, 0], pos: [0, 0, 0], color: [0.2, 0.8, 0.3] },
-    { type: ShapeType.SPHERE, params: [1.0, 0, 0, 0], pos: [2.5, 0, 0], color: [0.2, 0.3, 0.8] },
-  ];
-
-  for (let i = 0; i < shapes.length; i++) {
-    const s = shapes[i]!;
-    wasm.shapeTypes[i] = s.type;
-    // Params: 4 floats per shape
-    wasm.shapeParams[i * 4] = s.params[0];
-    wasm.shapeParams[i * 4 + 1] = s.params[1];
-    wasm.shapeParams[i * 4 + 2] = s.params[2];
-    wasm.shapeParams[i * 4 + 3] = s.params[3];
-    // Position
-    wasm.shapePositions[i * 3] = s.pos[0];
-    wasm.shapePositions[i * 3 + 1] = s.pos[1];
-    wasm.shapePositions[i * 3 + 2] = s.pos[2];
-    // Color
-    wasm.shapeColors[i * 3] = s.color[0];
-    wasm.shapeColors[i * 3 + 1] = s.color[1];
-    wasm.shapeColors[i * 3 + 2] = s.color[2];
+function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
+  if (scene.count > wasm.maxShapes) {
+    console.error(`Too many shapes: ${scene.count} > ${wasm.maxShapes}`);
+    return;
   }
 
-  wasm.exports.set_scene(shapes.length, 0.8); // count, smoothK
+  // Copy typed arrays directly to WASM buffers
+  wasm.shapeTypes.set(scene.types);
+  wasm.shapeParams.set(scene.params);
+  wasm.shapePositions.set(scene.positions);
+  wasm.shapeColors.set(scene.colors);
+
+  wasm.exports.set_scene(scene.count, scene.smoothK);
 }
 
 // =============================================================================
@@ -167,6 +140,11 @@ function renderFrame(
     console.error(`Too many rays: ${nRays} > ${wasm.maxRays}`);
     return;
   }
+
+  // Compile scene at time t and load to WASM
+  const objects = makeSceneData(t);
+  const flatScene = compileScene(objects, config.scene.smoothK);
+  loadScene(wasm, flatScene);
 
   // Generate rays using JS Camera
   const { origins, directions } = camera.generateRays(width, height);
@@ -328,15 +306,12 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Set up test scene (3 colored spheres)
-  setTestScene(wasm);
-
-  // Camera config
+  // Camera config from scene.ts
   const camera = new Camera({
-    eye: [0, 0, -8],
-    at: [0, 0, 0],
-    up: [0, 1, 0],
-    fov: 50,
+    eye: config.camera.eye,
+    at: config.camera.at,
+    up: config.camera.up,
+    fov: config.camera.fov,
   });
 
   // Create FrameBufferRenderable
