@@ -209,7 +209,7 @@ function renderOutput(
         if (r > 10 || g > 10 || b > 10) {
           line += `\x1b[38;2;${r};${g};${b}m${chars[charIdx]}\x1b[0m`;
         } else {
-          line += `\x1b[38;2;0;0;0m@\x1b[0m`;
+          line += `\x1b[38;2;8;13;11m@\x1b[0m`;
         }
       }
       lines.push(line);

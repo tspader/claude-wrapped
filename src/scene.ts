@@ -54,8 +54,8 @@ export type Config = typeof config;
 // =============================================================================
 
 const SEED = 42;
-const NUM_OBJECTS = 8;
-const SMOOTH_K = 4.0;
+const NUM_OBJECTS = 3;
+const SMOOTH_K = 8.0;
 
 // Seeded random number generator
 function seededRandom(seed: number) {
@@ -122,8 +122,8 @@ export function makeScene(
 ): SceneResult {
   const { sphere, smoothUnion } = prims;
 
-  const driftSpeed = 0.5;
-  const driftScale = 10.0;
+  const driftSpeed = 0.125;
+  const driftScale = 1.0;
   const sizeOscSpeed = 0.8;
   const sizeOscAmount = 0.15;
   const noiseSizeAmount = 0.1;
@@ -154,7 +154,7 @@ export function makeScene(
     combined = smoothUnion(combined, shapes[i]!, SMOOTH_K);
   }
 
-  const color: Vec3 = [0.9, 0.9, 0.9];
+  const color: Vec3 = [0.388, 0.627, 0.533];
 
   return {
     scene: [[combined, color]],
@@ -205,7 +205,7 @@ export function makeSceneBatched(t: number): BatchedScene {
   const cy = new Float64Array(NUM_OBJECTS);
   const cz = new Float64Array(NUM_OBJECTS);
   const r = new Float64Array(NUM_OBJECTS);
-  
+
   for (let i = 0; i < NUM_OBJECTS; i++) {
     cx[i] = centers[i]![0];
     cy[i] = centers[i]![1];
@@ -223,7 +223,7 @@ export function makeSceneBatched(t: number): BatchedScene {
     out: Float64Array
   ): void {
     const n = px.length;
-    
+
     // First sphere - initialize out with its distances
     {
       const sx = cx[0]!, sy = cy[0]!, sz = cz[0]!, sr = r[0]!;
@@ -234,17 +234,17 @@ export function makeSceneBatched(t: number): BatchedScene {
         out[i] = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
       }
     }
-    
+
     // Remaining spheres - smooth union with accumulated result
     for (let s = 1; s < NUM_OBJECTS; s++) {
       const sx = cx[s]!, sy = cy[s]!, sz = cz[s]!, sr = r[s]!;
-      
+
       for (let i = 0; i < n; i++) {
         const dx = px[i]! - sx;
         const dy = py[i]! - sy;
         const dz = pz[i]! - sz;
         const d2 = Math.sqrt(dx * dx + dy * dy + dz * dz) - sr;
-        
+
         // Smooth union: d1 is out[i], d2 is new sphere
         const d1 = out[i]!;
         const h = Math.max(0, Math.min(1, 0.5 + 0.5 * (d2 - d1) / k));
