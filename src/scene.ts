@@ -115,9 +115,79 @@ const NUM_OBJECTS = basePositions.length;
 // =============================================================================
 
 const RED_BALL_COLOR: Vec3 = [180 / 255, 101 / 255, 111 / 255]; // indian_red
-const redBallBasePos: Vec3 = [COLUMN_X, 0, -2];
 const redBallRadius = SPHERE_RADIUS / 8;
 const redBallNoiseOffset: Vec3 = [rng() * 1000, rng() * 1000, rng() * 1000];
+
+// Slingshot animation parameters
+const SLINGSHOT_CYCLE_DURATION = 8.0; // seconds for full cycle
+const SLINGSHOT_WINDUP_RATIO = 0.25;  // portion of cycle for windup
+const SLINGSHOT_FLIGHT_RATIO = 0.75;  // portion of cycle for flight
+const SLINGSHOT_REST_Y = 0;           // ball's rest Y position
+const SLINGSHOT_LAUNCH_OFFSET_X = 2.0; // how far to pull back on X (towards edge)
+const SLINGSHOT_LAUNCH_OFFSET_Y = -2.0; // how far down during windup
+const SLINGSHOT_PEAK_Y = 2.0;         // peak height during flight
+const SLINGSHOT_Z = -1;               // Z position
+
+// Easing functions
+function easeInOutQuad(t: number): number {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function easeOutQuad(t: number): number {
+  return 1 - (1 - t) * (1 - t);
+}
+
+function easeInQuad(t: number): number {
+  return t * t;
+}
+
+// Compute red ball position based on slingshot animation
+function getRedBallPosition(t: number): Vec3 {
+  const cycleTime = t % SLINGSHOT_CYCLE_DURATION;
+  const windupDuration = SLINGSHOT_CYCLE_DURATION * SLINGSHOT_WINDUP_RATIO;
+  const flightDuration = SLINGSHOT_CYCLE_DURATION * SLINGSHOT_FLIGHT_RATIO;
+
+  // Determine which side we're on (alternates each cycle)
+  const cycleIndex = Math.floor(t / SLINGSHOT_CYCLE_DURATION);
+  const startX = cycleIndex % 2 === 0 ? COLUMN_X : -COLUMN_X;
+  const targetX = -startX; // mirror on X axis
+
+  // Launch position: pulled back towards edge and down
+  const launchX = startX + (startX > 0 ? SLINGSHOT_LAUNCH_OFFSET_X : -SLINGSHOT_LAUNCH_OFFSET_X);
+  const launchY = SLINGSHOT_REST_Y + SLINGSHOT_LAUNCH_OFFSET_Y;
+
+  if (cycleTime < windupDuration) {
+    // Windup phase: ease from rest to launch position
+    const windupT = easeInOutQuad(cycleTime / windupDuration);
+    return [
+      startX + (launchX - startX) * windupT,
+      SLINGSHOT_REST_Y + (launchY - SLINGSHOT_REST_Y) * windupT,
+      SLINGSHOT_Z,
+    ];
+  } else {
+    // Flight phase
+    const flightTime = cycleTime - windupDuration;
+    const flightT = flightTime / flightDuration;
+
+    // X: easeOut from launch to target
+    const x = launchX + (targetX - launchX) * easeOutQuad(flightT);
+
+    // Y: parabolic arc - launch -> peak -> target
+    // Use a combination: rise with easeOut, fall with easeIn
+    let y: number;
+    if (flightT < 0.5) {
+      // Rising: launch -> peak
+      const riseT = easeOutQuad(flightT * 2);
+      y = launchY + (SLINGSHOT_PEAK_Y - launchY) * riseT;
+    } else {
+      // Falling: peak -> rest
+      const fallT = easeInQuad((flightT - 0.5) * 2);
+      y = SLINGSHOT_PEAK_Y + (SLINGSHOT_REST_Y - SLINGSHOT_PEAK_Y) * fallT;
+    }
+
+    return [x, y, SLINGSHOT_Z];
+  }
+}
 
 // Simplex noise
 const noise2D = createNoise2D(() => rng());
@@ -195,13 +265,15 @@ export function makeScene(
 
   const color: Vec3 = [0.388, 0.627, 0.533];
 
-  // Red ball (separate from main blob, same noise-based sway)
+  // Red ball with slingshot animation + noise sway
+  const redBallBasePos = getRedBallPosition(t);
   const [rbx, rby, rbz] = redBallBasePos;
   const [rnx, rny, rnz] = redBallNoiseOffset;
 
-  const rbDx = pnoise1(rnx + t * driftSpeed, 2) * driftScale;
-  const rbDy = pnoise1(rny + t * driftSpeed, 2) * driftScale * 0.5;
-  const rbDz = pnoise1(rnz + t * driftSpeed, 2) * driftScale;
+  // Add subtle noise on top of the slingshot animation
+  const rbDx = pnoise1(rnx + t * driftSpeed, 2) * driftScale * 0.3;
+  const rbDy = pnoise1(rny + t * driftSpeed, 2) * driftScale * 0.2;
+  const rbDz = pnoise1(rnz + t * driftSpeed, 2) * driftScale * 0.3;
 
   const redBallPos: Vec3 = [rbx + rbDx, rby + rbDy, rbz + rbDz];
   const redBallSize = Math.max(0.1, redBallRadius);
