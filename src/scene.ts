@@ -46,7 +46,7 @@ export const config = {
   },
   scene: {
     seed: 42,
-    smoothK: 2.0,
+    smoothK: 1.0,  // Lower = faster convergence, less blobby
     colorBlendK: 0.5,
 
     columns: {

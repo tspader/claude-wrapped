@@ -40,6 +40,16 @@ static f32 out_r[MAX_RAYS];
 static f32 out_g[MAX_RAYS];
 static f32 out_b[MAX_RAYS];
 
+// Composited output buffer (for terminal)
+// Layout: [char, r, g, b] per cell (4 bytes each) - legacy format
+static u8 composited[MAX_RAYS * 4];
+
+// OpenTUI-compatible output buffers (SoA layout)
+// char: u32 per cell (unicode codepoint)
+// fg: 4 x f32 per cell (RGBA normalized floats)
+static u32 out_char[MAX_RAYS];
+static f32 out_fg[MAX_RAYS * 4];  // r, g, b, a per cell
+
 // Background color
 static f32 bg_color[3];
 
@@ -63,6 +73,14 @@ static u32 group_count = 0;
 
 // Current ray count
 static u32 ray_count = 0;
+
+// Camera parameters for ray generation
+static f32 cam_eye[3];
+static f32 cam_forward[3];
+static f32 cam_right[3];
+static f32 cam_up[3];
+static f32 cam_half_width;
+static f32 cam_half_height;
 
 // =============================================================================
 // Performance Metrics
@@ -502,6 +520,68 @@ void set_groups(u32 count) {
 u32 get_max_shapes(void) { return MAX_SHAPES; }
 u32 get_max_groups(void) { return MAX_GROUPS; }
 
+// Set camera parameters (pre-computed from eye, at, up, fov, aspect in JS)
+void set_camera(
+    f32 ex, f32 ey, f32 ez,      // eye position
+    f32 fx, f32 fy, f32 fz,      // forward vector (normalized)
+    f32 rx, f32 ry, f32 rz,      // right vector (normalized)
+    f32 ux, f32 uy, f32 uz,      // up vector (normalized)
+    f32 halfW, f32 halfH         // half FOV extents
+) {
+    cam_eye[0] = ex; cam_eye[1] = ey; cam_eye[2] = ez;
+    cam_forward[0] = fx; cam_forward[1] = fy; cam_forward[2] = fz;
+    cam_right[0] = rx; cam_right[1] = ry; cam_right[2] = rz;
+    cam_up[0] = ux; cam_up[1] = uy; cam_up[2] = uz;
+    cam_half_width = halfW;
+    cam_half_height = halfH;
+}
+
+// Generate rays directly into ray buffers
+// Called after set_camera() and set_ray_count()
+void generate_rays(u32 width, u32 height) {
+    u32 count = width * height;
+    if (count > MAX_RAYS) count = MAX_RAYS;
+    
+    f32 inv_w = 1.0f / (f32)(width - 1);
+    f32 inv_h = 1.0f / (f32)(height - 1);
+    
+    for (u32 row = 0; row < height; row++) {
+        f32 v = 1.0f - 2.0f * (f32)row * inv_h;  // +1 top, -1 bottom
+        
+        for (u32 col = 0; col < width; col++) {
+            u32 idx = row * width + col;
+            if (idx >= MAX_RAYS) break;
+            
+            f32 u = 2.0f * (f32)col * inv_w - 1.0f;  // -1 left, +1 right
+            
+            // Origin = camera eye
+            ray_ox[idx] = cam_eye[0];
+            ray_oy[idx] = cam_eye[1];
+            ray_oz[idx] = cam_eye[2];
+            
+            // Direction = forward + u*halfW*right + v*halfH*up (then normalize)
+            f32 dx = cam_forward[0] + u * cam_half_width * cam_right[0] + v * cam_half_height * cam_up[0];
+            f32 dy = cam_forward[1] + u * cam_half_width * cam_right[1] + v * cam_half_height * cam_up[1];
+            f32 dz = cam_forward[2] + u * cam_half_width * cam_right[2] + v * cam_half_height * cam_up[2];
+            
+            // Normalize
+            f32 len = sqrtf_approx(dx*dx + dy*dy + dz*dz);
+            if (len > 0.0f) {
+                f32 inv_len = 1.0f / len;
+                dx *= inv_len;
+                dy *= inv_len;
+                dz *= inv_len;
+            }
+            
+            ray_dx[idx] = dx;
+            ray_dy[idx] = dy;
+            ray_dz[idx] = dz;
+        }
+    }
+    
+    ray_count = count;
+}
+
 void compute_background(f32 time) {
     f32 base_r = 0.02f;
     f32 base_g = 0.02f;
@@ -674,3 +754,110 @@ void march_rays(void) {
 }
 
 u32 get_max_rays(void) { return MAX_RAYS; }
+
+// =============================================================================
+// Compositing (RGB floats -> ASCII + color bytes)
+// =============================================================================
+
+u8* get_composited_ptr(void) { return composited; }
+u32* get_out_char_ptr(void) { return out_char; }
+f32* get_out_fg_ptr(void) { return out_fg; }
+
+// ASCII ramp: " .:-=+*#%@" (10 chars)
+static const char ascii_ramp[10] = {' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'};
+
+// Bayer 2x2 dither matrix (scaled by 0.15)
+// [0.0, 0.5] -> [-0.075, 0.0]
+// [0.75, 0.25] -> [0.0375, -0.0375]
+static const f32 bayer2x2[4] = {-0.075f, 0.0f, 0.0375f, -0.0375f};
+
+// Legacy composite - outputs [char, r, g, b] bytes
+void composite(u32 width, u32 height) {
+    u32 count = width * height;
+    if (count > MAX_RAYS) count = MAX_RAYS;
+    
+    for (u32 i = 0; i < count; i++) {
+        u32 row = i / width;
+        u32 col = i % width;
+        
+        f32 r = out_r[i];
+        f32 g = out_g[i];
+        f32 b = out_b[i];
+        
+        // Brightness with dither
+        f32 brightness = (r + g + b) * 0.333333f;
+        u32 dither_idx = (row & 1) * 2 + (col & 1);
+        brightness += bayer2x2[dither_idx];
+        
+        // Clamp and map to ASCII
+        if (brightness < 0.0f) brightness = 0.0f;
+        if (brightness > 1.0f) brightness = 1.0f;
+        
+        u32 base = i * 4;
+        
+        // Check if pixel has color (not background)
+        if (r > 0.04f || g > 0.04f || b > 0.04f) {
+            i32 char_idx = (i32)(brightness * 9.0f);
+            if (char_idx < 0) char_idx = 0;
+            if (char_idx > 9) char_idx = 9;
+            
+            composited[base] = ascii_ramp[char_idx];
+            composited[base + 1] = (u8)(r * 255.0f);
+            composited[base + 2] = (u8)(g * 255.0f);
+            composited[base + 3] = (u8)(b * 255.0f);
+        } else {
+            // Dark background: '@' with dark color
+            composited[base] = '@';
+            composited[base + 1] = 8;   // 0.03 * 255 ≈ 8
+            composited[base + 2] = 13;  // 0.05 * 255 ≈ 13
+            composited[base + 3] = 10;  // 0.04 * 255 ≈ 10
+        }
+    }
+}
+
+// OpenTUI-compatible composite - outputs to out_char[] and out_fg[] arrays
+// These can be bulk-copied via TypedArray.set() for zero-copy performance
+void composite_opentui(u32 width, u32 height) {
+    u32 count = width * height;
+    if (count > MAX_RAYS) count = MAX_RAYS;
+    
+    for (u32 i = 0; i < count; i++) {
+        u32 row = i / width;
+        u32 col = i % width;
+        
+        f32 r = out_r[i];
+        f32 g = out_g[i];
+        f32 b = out_b[i];
+        
+        // Brightness with dither
+        f32 brightness = (r + g + b) * 0.333333f;
+        u32 dither_idx = (row & 1) * 2 + (col & 1);
+        brightness += bayer2x2[dither_idx];
+        
+        // Clamp and map to ASCII
+        if (brightness < 0.0f) brightness = 0.0f;
+        if (brightness > 1.0f) brightness = 1.0f;
+        
+        u32 fg_base = i * 4;
+        
+        // Check if pixel has color (not background)
+        if (r > 0.04f || g > 0.04f || b > 0.04f) {
+            i32 char_idx = (i32)(brightness * 9.0f);
+            if (char_idx < 0) char_idx = 0;
+            if (char_idx > 9) char_idx = 9;
+            
+            out_char[i] = (u32)ascii_ramp[char_idx];
+            out_fg[fg_base]     = r;
+            out_fg[fg_base + 1] = g;
+            out_fg[fg_base + 2] = b;
+            out_fg[fg_base + 3] = 1.0f;  // alpha
+        } else {
+            // Dark background: '@' with dark color
+            out_char[i] = '@';
+            out_fg[fg_base]     = 0.03f;
+            out_fg[fg_base + 1] = 0.05f;
+            out_fg[fg_base + 2] = 0.04f;
+            out_fg[fg_base + 3] = 1.0f;
+        }
+    }
+}

@@ -10,7 +10,7 @@ import {
   TextRenderable,
   RGBA,
 } from "@opentui/core";
-import { Camera, type Vec3 } from "./camera";
+import { Camera, type Vec3, normalize, cross, sub } from "./camera";
 import type { OptimizedBuffer } from "@opentui/core";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
@@ -51,8 +51,23 @@ interface WasmExports {
   set_ray_count: (count: number) => void;
   set_scene: (count: number, smoothK: number) => void;
   set_groups: (count: number) => void;
+  set_camera: (
+    ex: number, ey: number, ez: number,
+    fx: number, fy: number, fz: number,
+    rx: number, ry: number, rz: number,
+    ux: number, uy: number, uz: number,
+    halfW: number, halfH: number
+  ) => void;
+  generate_rays: (width: number, height: number) => void;
   compute_background: (time: number) => void;
   march_rays: () => void;
+  // Compositing
+  get_composited_ptr: () => number;
+  composite: (width: number, height: number) => void;
+  // OpenTUI-compatible compositing (bulk copy)
+  get_out_char_ptr: () => number;
+  get_out_fg_ptr: () => number;
+  composite_opentui: (width: number, height: number) => void;
 }
 
 // WASM perf metric indices (must match renderer.c)
@@ -91,8 +106,13 @@ interface WasmRenderer {
   shapeColors: Float32Array;
   shapeGroups: Uint8Array;
   groupBlendModes: Uint8Array;
-  // Performance metrics
+  // Performance metrics (16 floats)
   perfMetrics: Float32Array;
+  // Composited output (4 bytes per cell: char, r, g, b)
+  composited: Uint8Array;
+  // OpenTUI-compatible output (bulk copy)
+  outChar: Uint32Array;
+  outFg: Float32Array;
 }
 
 // Granular timing for TS-side operations
@@ -103,6 +123,8 @@ interface FrameTimings {
   rayGenMs: number;
   rayCopyMs: number;
   marchRaysMs: number;
+  compositeMs: number;
+  bufferCopyMs: number;
   renderToBufferMs: number;
   totalMs: number;
   // WASM metrics
@@ -154,12 +176,39 @@ async function loadWasm(): Promise<WasmRenderer> {
     groupBlendModes: new Uint8Array(memory.buffer, exports.get_group_blend_modes_ptr(), maxGroups),
     // Performance metrics (16 floats)
     perfMetrics: new Float32Array(memory.buffer, exports.get_perf_metrics_ptr(), 16),
+    // Composited output (4 bytes per cell: char, r, g, b)
+    composited: new Uint8Array(memory.buffer, exports.get_composited_ptr(), maxRays * 4),
+    // OpenTUI-compatible output (bulk copy)
+    outChar: new Uint32Array(memory.buffer, exports.get_out_char_ptr(), maxRays),
+    outFg: new Float32Array(memory.buffer, exports.get_out_fg_ptr(), maxRays * 4),
   };
 }
 
 // =============================================================================
 // Scene Loading from compiled FlatScene
 // =============================================================================
+
+/**
+ * Set up camera in WASM - compute basis vectors and pass to WASM.
+ */
+function setupCamera(wasm: WasmRenderer, camera: Camera, width: number, height: number): void {
+  const forward = normalize(sub(camera.at, camera.eye));
+  const right = normalize(cross(forward, camera.up));
+  const up = cross(right, forward);
+
+  const aspect = width / height;
+  const fovRad = (camera.fov * Math.PI) / 180;
+  const halfHeight = Math.tan(fovRad / 2);
+  const halfWidth = halfHeight * aspect;
+
+  wasm.exports.set_camera(
+    camera.eye[0], camera.eye[1], camera.eye[2],
+    forward[0], forward[1], forward[2],
+    right[0], right[1], right[2],
+    up[0], up[1], up[2],
+    halfWidth, halfHeight
+  );
+}
 
 function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
   if (scene.count > wasm.maxShapes) {
@@ -205,6 +254,8 @@ function renderFrame(
     rayGenMs: 0,
     rayCopyMs: 0,
     marchRaysMs: 0,
+    compositeMs: 0,
+    bufferCopyMs: 0,
     renderToBufferMs: 0,
     totalMs: 0,
     wasmTotalSteps: 0,
@@ -242,27 +293,14 @@ function renderFrame(
   loadScene(wasm, flatScene);
   timings.loadSceneMs = performance.now() - t0;
 
-  // Generate rays using JS Camera at native resolution
+  // Generate rays in WASM (replaces TS camera.generateRays + copy)
   t0 = performance.now();
-  const { origins, directions } = camera.generateRays(nativeWidth, nativeHeight);
+  setupCamera(wasm, camera, nativeWidth, nativeHeight);
+  wasm.exports.generate_rays(nativeWidth, nativeHeight);
   timings.rayGenMs = performance.now() - t0;
+  timings.rayCopyMs = 0; // No longer needed - rays generated directly in WASM
 
-  // Copy rays to WASM buffers
-  t0 = performance.now();
-  for (let i = 0; i < nRays; i++) {
-    const o = origins[i]!;
-    const d = directions[i]!;
-    wasm.rayOx[i] = o[0];
-    wasm.rayOy[i] = o[1];
-    wasm.rayOz[i] = o[2];
-    wasm.rayDx[i] = d[0];
-    wasm.rayDy[i] = d[1];
-    wasm.rayDz[i] = d[2];
-  }
-  timings.rayCopyMs = performance.now() - t0;
-
-  // Set ray count and compute background
-  wasm.exports.set_ray_count(nRays);
+  // Compute background
   wasm.exports.compute_background(t);
 
   // Do the raymarching in WASM
@@ -281,12 +319,23 @@ function renderFrame(
   timings.wasmHitRate = wasm.perfMetrics[PERF.HIT_RATE]!;
   timings.wasmAabbSkipped = wasm.perfMetrics[PERF.AABB_SKIPPED]!;
 
-  // Read results and render to buffer with upscaling
+  // Composite in WASM (RGB floats -> OpenTUI format)
+  t0 = performance.now();
+  // Use OpenTUI-compatible composite when scale=1
+  if (scale === 1 && nativeWidth === termWidth && nativeHeight === termHeight) {
+    wasm.exports.composite_opentui(nativeWidth, nativeHeight);
+  } else {
+    wasm.exports.composite(nativeWidth, nativeHeight);
+  }
+  timings.compositeMs = performance.now() - t0;
+
+  // Copy to framebuffer
   t0 = performance.now();
   const bg: Vec3 = [wasm.bgColor[0]!, wasm.bgColor[1]!, wasm.bgColor[2]!];
-  renderToBufferUpscaled(wasm, nativeWidth, nativeHeight, termWidth, termHeight, scale, frameBuffer, bg);
-  timings.renderToBufferMs = performance.now() - t0;
+  copyToFrameBuffer(wasm, nativeWidth, nativeHeight, termWidth, termHeight, scale, frameBuffer, bg);
+  timings.bufferCopyMs = performance.now() - t0;
 
+  timings.renderToBufferMs = timings.compositeMs + timings.bufferCopyMs;
   timings.totalMs = performance.now() - totalStart;
   return timings;
 }
@@ -295,16 +344,7 @@ function renderFrame(
 // Output Rendering (ASCII mode)
 // =============================================================================
 
-function dither(brightness: number, row: number, col: number): number {
-  const bayer2x2 = [
-    [0.0, 0.5],
-    [0.75, 0.25],
-  ];
-  const threshold = bayer2x2[row % 2]![col % 2]!;
-  return brightness + (threshold - 0.5) * 0.15;
-}
-
-function renderToBufferUpscaled(
+function copyToFrameBuffer(
   wasm: WasmRenderer,
   nativeWidth: number,
   nativeHeight: number,
@@ -314,38 +354,71 @@ function renderToBufferUpscaled(
   frameBuffer: OptimizedBuffer,
   background: Vec3
 ): void {
-  const chars = " .:-=+*#%@";
-  const bgColor = RGBA.fromValues(background[0], background[1], background[2], 1);
+  // Use OpenTUI bulk copy when scale=1 and dimensions match
+  if (scale === 1 && nativeWidth === termWidth && nativeHeight === termHeight) {
+    copyToFrameBufferBulk(wasm, nativeWidth, nativeHeight, frameBuffer, background);
+    return;
+  }
 
-  // Iterate over terminal pixels and sample from native resolution
+  // Fallback to per-cell copy when scaling is needed
+  const bgColor = RGBA.fromValues(background[0], background[1], background[2], 1);
+  const composited = wasm.composited;
+
   for (let termRow = 0; termRow < termHeight; termRow++) {
-    // Map terminal row to native row
     const nativeRow = Math.min(Math.floor(termRow / scale), nativeHeight - 1);
 
     for (let termCol = 0; termCol < termWidth; termCol++) {
-      // Map terminal col to native col
       const nativeCol = Math.min(Math.floor(termCol / scale), nativeWidth - 1);
 
       const idx = nativeRow * nativeWidth + nativeCol;
-      const r = wasm.outR[idx]!;
-      const g = wasm.outG[idx]!;
-      const b = wasm.outB[idx]!;
+      const base = idx * 4;
 
-      let brightness = (r + g + b) / 3;
-      brightness = dither(brightness, termRow, termCol);
-      let charIdx = Math.floor(brightness * (chars.length - 1));
-      charIdx = Math.max(0, Math.min(chars.length - 1, charIdx));
+      const char = String.fromCharCode(composited[base]!);
+      const r = composited[base + 1]! / 255;
+      const g = composited[base + 2]! / 255;
+      const b = composited[base + 3]! / 255;
 
-      // Check if pixel has color (not background)
-      if (r > 0.04 || g > 0.04 || b > 0.04) {
-        const fg = RGBA.fromValues(r, g, b, 1);
-        frameBuffer.setCell(termCol, termRow, chars[charIdx]!, fg, bgColor, 0);
-      } else {
-        // Dark background character
-        const darkFg = RGBA.fromValues(0.03, 0.05, 0.04, 1);
-        frameBuffer.setCell(termCol, termRow, "@", darkFg, bgColor, 0);
-      }
+      const fg = RGBA.fromValues(r, g, b, 1);
+      frameBuffer.setCell(termCol, termRow, char, fg, bgColor, 0);
     }
+  }
+}
+
+function copyToFrameBufferBulk(
+  wasm: WasmRenderer,
+  width: number,
+  height: number,
+  frameBuffer: OptimizedBuffer,
+  background: Vec3
+): void {
+  // Get OpenTUI's raw buffers
+  const buffers = (frameBuffer as any).buffers;
+  if (!buffers) {
+    // Fallback if buffers not available
+    console.warn("OpenTUI buffers not available, falling back to setCell");
+    return;
+  }
+
+  const count = width * height;
+  const { char: charBuf, fg: fgBuf, bg: bgBuf } = buffers as {
+    char: Uint32Array;
+    fg: Float32Array;
+    bg: Float32Array;
+  };
+
+  // Bulk copy char and fg from WASM
+  // WASM composite_opentui() already outputs in OpenTUI format
+  charBuf.set(wasm.outChar.subarray(0, count));
+  fgBuf.set(wasm.outFg.subarray(0, count * 4));
+
+  // Fill bg with background color
+  const [bgR, bgG, bgB] = background;
+  for (let i = 0; i < count; i++) {
+    const base = i * 4;
+    bgBuf[base] = bgR;
+    bgBuf[base + 1] = bgG;
+    bgBuf[base + 2] = bgB;
+    bgBuf[base + 3] = 1.0;
   }
 }
 
@@ -490,7 +563,8 @@ async function runBenchmark(
   console.log(`  rayGen:        ${last.rayGenMs.toFixed(3)}ms`);
   console.log(`  rayCopy:       ${last.rayCopyMs.toFixed(3)}ms`);
   console.log(`  marchRays:     ${last.marchRaysMs.toFixed(3)}ms`);
-  console.log(`  renderBuffer:  ${last.renderToBufferMs.toFixed(3)}ms`);
+  console.log(`  composite:     ${last.compositeMs.toFixed(3)}ms`);
+  console.log(`  bufferCopy:    ${last.bufferCopyMs.toFixed(3)}ms`);
   console.log(`  TOTAL:         ${last.totalMs.toFixed(3)}ms`);
   console.log();
   console.log(`-- WASM Metrics --`);
@@ -522,6 +596,8 @@ function renderFrameBenchmark(
     rayGenMs: 0,
     rayCopyMs: 0,
     marchRaysMs: 0,
+    compositeMs: 0,
+    bufferCopyMs: 0,
     renderToBufferMs: 0,
     totalMs: 0,
     wasmTotalSteps: 0,
@@ -559,27 +635,14 @@ function renderFrameBenchmark(
   loadScene(wasm, flatScene);
   timings.loadSceneMs = performance.now() - t0;
 
-  // Generate rays using JS Camera at native resolution
+  // Generate rays in WASM (replaces TS camera.generateRays + copy)
   t0 = performance.now();
-  const { origins, directions } = camera.generateRays(nativeWidth, nativeHeight);
+  setupCamera(wasm, camera, nativeWidth, nativeHeight);
+  wasm.exports.generate_rays(nativeWidth, nativeHeight);
   timings.rayGenMs = performance.now() - t0;
+  timings.rayCopyMs = 0; // No longer needed - rays generated directly in WASM
 
-  // Copy rays to WASM buffers
-  t0 = performance.now();
-  for (let i = 0; i < nRays; i++) {
-    const o = origins[i]!;
-    const d = directions[i]!;
-    wasm.rayOx[i] = o[0];
-    wasm.rayOy[i] = o[1];
-    wasm.rayOz[i] = o[2];
-    wasm.rayDx[i] = d[0];
-    wasm.rayDy[i] = d[1];
-    wasm.rayDz[i] = d[2];
-  }
-  timings.rayCopyMs = performance.now() - t0;
-
-  // Set ray count and compute background
-  wasm.exports.set_ray_count(nRays);
+  // Compute background
   wasm.exports.compute_background(t);
 
   // Do the raymarching in WASM
@@ -598,8 +661,14 @@ function renderFrameBenchmark(
   timings.wasmHitRate = wasm.perfMetrics[PERF.HIT_RATE]!;
   timings.wasmAabbSkipped = wasm.perfMetrics[PERF.AABB_SKIPPED]!;
 
-  // Skip renderToBuffer in benchmark mode - that's terminal I/O
-  timings.renderToBufferMs = 0;
+  // Measure WASM composite (but skip the TS framebuffer copy)
+  t0 = performance.now();
+  wasm.exports.composite(nativeWidth, nativeHeight);
+  timings.compositeMs = performance.now() - t0;
+
+  // Skip the TS framebuffer copy in benchmark mode - that's terminal I/O
+  timings.bufferCopyMs = 0;
+  timings.renderToBufferMs = timings.compositeMs;
 
   timings.totalMs = performance.now() - totalStart;
   return timings;
