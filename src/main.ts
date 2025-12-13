@@ -6,6 +6,8 @@
 import {
   createCliRenderer,
   FrameBufferRenderable,
+  BoxRenderable,
+  TextRenderable,
   RGBA,
 } from "@opentui/core";
 import {
@@ -288,8 +290,9 @@ async function main(): Promise<void> {
     targetFps: args.fps,
   });
 
-  const width = args.width ?? config.render.width ?? renderer.width;
-  const height = args.height ?? config.render.height ?? renderer.height;
+  // Use terminal dimensions (renderer.width/height are set from stdout.columns/rows)
+  const width = args.width ?? renderer.width;
+  const height = args.height ?? renderer.height;
   const bg = config.render.background;
   const lighting = config.lighting;
 
@@ -304,6 +307,36 @@ async function main(): Promise<void> {
   });
 
   renderer.root.add(canvas);
+
+  // Create centered box with title
+  const boxWidth = 20;
+  const boxHeight = 5;
+  const boxLeft = Math.floor((width - boxWidth) / 2);
+  const boxTop = Math.floor((height - boxHeight) / 2);
+
+  const titleBox = new BoxRenderable(renderer, {
+    id: "title-box",
+    width: boxWidth,
+    height: boxHeight,
+    position: "absolute",
+    left: boxLeft,
+    top: boxTop,
+    border: true,
+    borderStyle: "double",
+    borderColor: "#FFFFFF",
+    backgroundColor: RGBA.fromValues(0, 0, 0, 0.7),
+  });
+
+  const titleText = new TextRenderable(renderer, {
+    id: "title-text",
+    content: "SP",
+    fg: "#FFFFFF",
+  });
+
+  titleBox.justifyContent = "center";
+  titleBox.alignItems = "center";
+  titleBox.add(titleText);
+  renderer.root.add(titleBox);
 
   // Set background color
   const bgColor = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
