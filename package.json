@@ -5,8 +5,7 @@
   "private": true,
   "scripts": {
     "build:wasm": "clang --target=wasm32 -O3 -msimd128 -nostdlib -Wl,--no-entry -Wl,--export-all -o src/wasm/renderer.wasm src/wasm/renderer.c",
-    "dev": "bun run build:wasm && bun src/main.ts",
-    "dev:wasm": "bun run build:wasm && bun src/main-wasm.ts"
+    "dev": "bun run build:wasm && bun src/main.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"

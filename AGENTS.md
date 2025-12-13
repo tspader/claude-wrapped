@@ -17,9 +17,10 @@ Terminal raymarcher with OpenTUI integration. Renders 3D SDF scenes as ASCII art
 - `renderer.root.add()` - add renderables to scene
 
 ## ours
-- `src/main.ts` - main entry, renderer setup, UI
-- `src/renderer/` - raymarching (Camera, RayMarcher, SDF)
-- `src/scene.ts` - scene config
+- `src/main.ts` - main entry, WASM renderer setup, UI
+- `src/camera.ts` - Camera class and Vec3 math helpers
+- `src/scene.ts` - scene config and data generation
+- `src/wasm/renderer.c` - WASM raymarching backend
 - `doc/opentui/packages/core/` - OpenTUI source reference
 
 # architecture
