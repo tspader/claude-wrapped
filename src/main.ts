@@ -148,12 +148,15 @@ function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
 function renderFrame(
   wasm: WasmRenderer,
   t: number,
-  width: number,
-  height: number,
+  nativeWidth: number,
+  nativeHeight: number,
+  termWidth: number,
+  termHeight: number,
+  scale: number,
   frameBuffer: OptimizedBuffer,
   camera: Camera
 ): void {
-  const nRays = width * height;
+  const nRays = nativeWidth * nativeHeight;
 
   if (nRays > wasm.maxRays) {
     console.error(`Too many rays: ${nRays} > ${wasm.maxRays}`);
@@ -165,8 +168,8 @@ function renderFrame(
   const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
   loadScene(wasm, flatScene);
 
-  // Generate rays using JS Camera
-  const { origins, directions } = camera.generateRays(width, height);
+  // Generate rays using JS Camera at native resolution
+  const { origins, directions } = camera.generateRays(nativeWidth, nativeHeight);
 
   // Copy rays to WASM buffers
   for (let i = 0; i < nRays; i++) {
@@ -187,9 +190,9 @@ function renderFrame(
   // Do the raymarching in WASM
   wasm.exports.march_rays();
 
-  // Read results and render to buffer
+  // Read results and render to buffer with upscaling
   const bg: Vec3 = [wasm.bgColor[0]!, wasm.bgColor[1]!, wasm.bgColor[2]!];
-  renderToBuffer(wasm, width, height, frameBuffer, bg);
+  renderToBufferUpscaled(wasm, nativeWidth, nativeHeight, termWidth, termHeight, scale, frameBuffer, bg);
 }
 
 // =============================================================================
@@ -205,36 +208,46 @@ function dither(brightness: number, row: number, col: number): number {
   return brightness + (threshold - 0.5) * 0.15;
 }
 
-function renderToBuffer(
+function renderToBufferUpscaled(
   wasm: WasmRenderer,
-  width: number,
-  height: number,
+  nativeWidth: number,
+  nativeHeight: number,
+  termWidth: number,
+  termHeight: number,
+  scale: number,
   frameBuffer: OptimizedBuffer,
   background: Vec3
 ): void {
   const chars = " .:-=+*#%@";
   const bgColor = RGBA.fromValues(background[0], background[1], background[2], 1);
 
-  for (let row = 0; row < height; row++) {
-    for (let col = 0; col < width; col++) {
-      const idx = row * width + col;
+  // Iterate over terminal pixels and sample from native resolution
+  for (let termRow = 0; termRow < termHeight; termRow++) {
+    // Map terminal row to native row
+    const nativeRow = Math.min(Math.floor(termRow / scale), nativeHeight - 1);
+
+    for (let termCol = 0; termCol < termWidth; termCol++) {
+      // Map terminal col to native col
+      const nativeCol = Math.min(Math.floor(termCol / scale), nativeWidth - 1);
+
+      const idx = nativeRow * nativeWidth + nativeCol;
       const r = wasm.outR[idx]!;
       const g = wasm.outG[idx]!;
       const b = wasm.outB[idx]!;
 
       let brightness = (r + g + b) / 3;
-      brightness = dither(brightness, row, col);
+      brightness = dither(brightness, termRow, termCol);
       let charIdx = Math.floor(brightness * (chars.length - 1));
       charIdx = Math.max(0, Math.min(chars.length - 1, charIdx));
 
       // Check if pixel has color (not background)
       if (r > 0.04 || g > 0.04 || b > 0.04) {
         const fg = RGBA.fromValues(r, g, b, 1);
-        frameBuffer.setCell(col, row, chars[charIdx]!, fg, bgColor, 0);
+        frameBuffer.setCell(termCol, termRow, chars[charIdx]!, fg, bgColor, 0);
       } else {
         // Dark background character
         const darkFg = RGBA.fromValues(0.03, 0.05, 0.04, 1);
-        frameBuffer.setCell(col, row, "@", darkFg, bgColor, 0);
+        frameBuffer.setCell(termCol, termRow, "@", darkFg, bgColor, 0);
       }
     }
   }
@@ -246,18 +259,16 @@ function renderToBuffer(
 
 function parseArgs(): {
   time: number;
-  width: number | null;
-  height: number | null;
   animate: boolean;
   fps: number;
+  scale: number;
 } {
   const args = process.argv.slice(2);
   const result = {
     time: 0,
-    width: null as number | null,
-    height: null as number | null,
     animate: false,
     fps: 30,
+    scale: 1,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -267,14 +278,6 @@ function parseArgs(): {
       case "--time":
         result.time = parseFloat(args[++i] || "0");
         break;
-      case "-w":
-      case "--width":
-        result.width = parseInt(args[++i] || "80", 10);
-        break;
-      case "-h":
-      case "--height":
-        result.height = parseInt(args[++i] || "40", 10);
-        break;
       case "-a":
       case "--animate":
         result.animate = true;
@@ -282,15 +285,18 @@ function parseArgs(): {
       case "--fps":
         result.fps = parseInt(args[++i] || "30", 10);
         break;
+      case "-s":
+      case "--scale":
+        result.scale = parseInt(args[++i] || "1", 10);
+        break;
       case "--help":
         console.log(`Usage: bun src/main.ts [options]
 
 Options:
   -t, --time <float>    Time value for scene (default: 0)
-  -w, --width <int>     Width in characters
-  -h, --height <int>    Height in characters
   -a, --animate         Run animation loop
   --fps <int>           Frames per second (default: 30)
+  -s, --scale <int>     Upscale factor (default: 1, render at 1/scale resolution)
   --help                Show this help`);
         process.exit(0);
     }
@@ -311,15 +317,21 @@ async function main(): Promise<void> {
     targetFps: args.fps,
   });
 
-  // Use terminal dimensions or args
-  const width = args.width ?? renderer.width;
-  const height = args.height ?? renderer.height;
+  // Terminal dimensions (output size)
+  const termWidth = renderer.width;
+  const termHeight = renderer.height;
+
+  // Native render resolution (scaled down)
+  // Use ceil to ensure we cover the full terminal when upscaling
+  const scale = Math.max(1, args.scale);
+  const nativeWidth = Math.ceil(termWidth / scale);
+  const nativeHeight = Math.ceil(termHeight / scale);
 
   // Check if we exceed max rays
-  const nRays = width * height;
+  const nRays = nativeWidth * nativeHeight;
   if (nRays > wasm.maxRays) {
-    process.stderr.write(`Terminal too large: ${width}x${height} = ${nRays} rays, max is ${wasm.maxRays}\n`);
-    process.stderr.write(`Use -w and -h to specify smaller dimensions\n`);
+    process.stderr.write(`Render resolution too large: ${nativeWidth}x${nativeHeight} = ${nRays} rays, max is ${wasm.maxRays}\n`);
+    process.stderr.write(`Use -s/--scale to reduce resolution\n`);
     process.exit(1);
   }
 
@@ -331,11 +343,11 @@ async function main(): Promise<void> {
     fov: config.camera.fov,
   });
 
-  // Create FrameBufferRenderable
+  // Create FrameBufferRenderable at terminal resolution
   const canvas = new FrameBufferRenderable(renderer, {
     id: "raymarcher",
-    width,
-    height,
+    width: termWidth,
+    height: termHeight,
     position: "absolute",
     left: 0,
     top: 0,
@@ -345,9 +357,9 @@ async function main(): Promise<void> {
 
   // Create centered stats box
   const boxMargin = 2;
-  const boxWidth = Math.floor(width / 2);
-  const boxHeight = height - boxMargin * 2;
-  const boxLeft = Math.floor((width - boxWidth) / 2);
+  const boxWidth = Math.floor(termWidth / 2);
+  const boxHeight = termHeight - boxMargin * 2;
+  const boxLeft = Math.floor((termWidth - boxWidth) / 2);
   const boxTop = boxMargin;
 
   const statsBox = new BoxRenderable(renderer, {
@@ -360,7 +372,7 @@ async function main(): Promise<void> {
     border: true,
     borderStyle: "single",
     borderColor: "#FFFFFF",
-    backgroundColor: RGBA.fromValues(0, 0, 0, 0.7),
+    backgroundColor: RGBA.fromValues(0, 0, 0, 0.5),
     padding: 1,
   });
 
@@ -401,6 +413,7 @@ async function main(): Promise<void> {
 
     statsText.content = [
       "",
+      `Resolution: ${nativeWidth}x${nativeHeight} (${scale}x)`,
       `Frame: ${frameTimeMs.toFixed(1)}ms`,
       `Worst: ${worstFrameTime.toFixed(1)}ms`,
       `Median: ${medianFrameTime.toFixed(1)}ms`,
@@ -424,7 +437,7 @@ async function main(): Promise<void> {
       const bgRgba = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
       renderer.setBackgroundColor(bgRgba);
       canvas.frameBuffer.clear(bgRgba);
-      renderFrame(wasm, t, width, height, canvas.frameBuffer, camera);
+      renderFrame(wasm, t, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
       t += deltaTime / 1000;
 
       const frameTimeMs = performance.now() - frameStart;
@@ -436,11 +449,12 @@ async function main(): Promise<void> {
     // Single frame
     const frameStart = performance.now();
     canvas.frameBuffer.clear(bgColor);
-    renderFrame(wasm, args.time, width, height, canvas.frameBuffer, camera);
+    renderFrame(wasm, args.time, nativeWidth, nativeHeight, termWidth, termHeight, scale, canvas.frameBuffer, camera);
     const frameTimeMs = performance.now() - frameStart;
 
     statsText.content = [
       "",
+      `Resolution: ${nativeWidth}x${nativeHeight} (${scale}x)`,
       `Frame: ${frameTimeMs.toFixed(1)}ms`,
       `Worst: ${frameTimeMs.toFixed(1)}ms`,
       `Median: ${frameTimeMs.toFixed(1)}ms`,
