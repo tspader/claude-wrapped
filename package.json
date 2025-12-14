@@ -6,7 +6,8 @@
   "scripts": {
     "build:wasm": "clang --target=wasm32 -O3 -msimd128 -nostdlib -Wl,--no-entry -Wl,--export-all -o src/wasm/renderer.wasm src/wasm/renderer.c",
     "dev": "bun run build:wasm && bun src/main.ts -a",
-    "bench": "bun run build:wasm && bun src/main.ts --bench -w 256 -h 64"
+    "bench": "bun run build:wasm && bun src/main.ts --bench -w 256 -h 64",
+    "smoke": "bun run build:wasm && bun src/main.ts -t 0"
   },
   "devDependencies": {
     "@types/bun": "latest"
