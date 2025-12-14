@@ -32,6 +32,28 @@ static f32 light_dir[3] = {0.577f, 0.577f, -0.577f};  // normalized (1,1,-1)
 static f32 light_intensity = 1.0f;
 static f32 ambient_weight = 0.1f;
 
+// Point lights (configurable via set_point_lights)
+#define MAX_POINT_LIGHTS 8
+static f32 point_light_x[MAX_POINT_LIGHTS];
+static f32 point_light_y[MAX_POINT_LIGHTS];
+static f32 point_light_z[MAX_POINT_LIGHTS];
+static f32 point_light_r[MAX_POINT_LIGHTS];
+static f32 point_light_g[MAX_POINT_LIGHTS];
+static f32 point_light_b[MAX_POINT_LIGHTS];
+static f32 point_light_intensity[MAX_POINT_LIGHTS];
+static f32 point_light_radius[MAX_POINT_LIGHTS];
+static u32 point_light_count = 0;
+
+// Precomputed SIMD point light data
+static v128_t pl_x_simd[MAX_POINT_LIGHTS];
+static v128_t pl_y_simd[MAX_POINT_LIGHTS];
+static v128_t pl_z_simd[MAX_POINT_LIGHTS];
+static v128_t pl_r_simd[MAX_POINT_LIGHTS];
+static v128_t pl_g_simd[MAX_POINT_LIGHTS];
+static v128_t pl_b_simd[MAX_POINT_LIGHTS];
+static v128_t pl_intensity_simd[MAX_POINT_LIGHTS];
+static v128_t pl_radius_simd[MAX_POINT_LIGHTS];
+
 // Compositing
 #define RGB_AVG_DIVISOR 0.333333f
 #define BG_THRESHOLD 0.04f
@@ -566,6 +588,33 @@ void set_groups(u32 count) {
 u32 get_max_shapes(void) { return MAX_SHAPES; }
 u32 get_max_groups(void) { return MAX_GROUPS; }
 
+// Point light API
+f32* get_point_light_x_ptr(void) { return point_light_x; }
+f32* get_point_light_y_ptr(void) { return point_light_y; }
+f32* get_point_light_z_ptr(void) { return point_light_z; }
+f32* get_point_light_r_ptr(void) { return point_light_r; }
+f32* get_point_light_g_ptr(void) { return point_light_g; }
+f32* get_point_light_b_ptr(void) { return point_light_b; }
+f32* get_point_light_intensity_ptr(void) { return point_light_intensity; }
+f32* get_point_light_radius_ptr(void) { return point_light_radius; }
+u32 get_max_point_lights(void) { return MAX_POINT_LIGHTS; }
+
+void set_point_lights(u32 count) {
+    point_light_count = count < MAX_POINT_LIGHTS ? count : MAX_POINT_LIGHTS;
+    
+    // Precompute SIMD splatted values
+    for (u32 i = 0; i < point_light_count; i++) {
+        pl_x_simd[i] = wasm_f32x4_splat(point_light_x[i]);
+        pl_y_simd[i] = wasm_f32x4_splat(point_light_y[i]);
+        pl_z_simd[i] = wasm_f32x4_splat(point_light_z[i]);
+        pl_r_simd[i] = wasm_f32x4_splat(point_light_r[i]);
+        pl_g_simd[i] = wasm_f32x4_splat(point_light_g[i]);
+        pl_b_simd[i] = wasm_f32x4_splat(point_light_b[i]);
+        pl_intensity_simd[i] = wasm_f32x4_splat(point_light_intensity[i]);
+        pl_radius_simd[i] = wasm_f32x4_splat(point_light_radius[i]);
+    }
+}
+
 // Set camera parameters (pre-computed from eye, at, up, fov, aspect in JS)
 void set_camera(
     f32 ex, f32 ey, f32 ez,      // eye position
@@ -758,7 +807,7 @@ void march_rays(void) {
                 wasm_f32x4_mul(nz, light_z_simd));
             ndotl = wasm_f32x4_max(ndotl, zero_simd);
 
-            // Ambient + diffuse (using precomputed constants)
+            // Ambient + directional diffuse (using precomputed constants)
             v128_t brightness = wasm_f32x4_add(
                 ambient_simd,
                 wasm_f32x4_mul(ndotl, diffuse_simd)
@@ -773,15 +822,91 @@ void march_rays(void) {
             get_hit_colors_simd(px, py, pz, hit_arr, cr_arr, cg_arr, cb_arr);
         }
 
+        // Point light contributions (accumulated RGB per ray)
+        f32 pl_contrib_r[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        f32 pl_contrib_g[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        f32 pl_contrib_b[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+        if (any_hit && point_light_count > 0) {
+            // Recompute normals for point light calculation (already have px,py,pz)
+            v128_t eps = wasm_f32x4_splat(NORMAL_EPS);
+            v128_t neg_eps = wasm_f32x4_splat(-NORMAL_EPS);
+            v128_t d0 = scene_sdf_simd(
+                wasm_f32x4_add(px, eps), wasm_f32x4_add(py, eps), wasm_f32x4_add(pz, neg_eps));
+            v128_t d1 = scene_sdf_simd(
+                wasm_f32x4_add(px, eps), wasm_f32x4_add(py, neg_eps), wasm_f32x4_add(pz, eps));
+            v128_t d2 = scene_sdf_simd(
+                wasm_f32x4_add(px, neg_eps), wasm_f32x4_add(py, eps), wasm_f32x4_add(pz, eps));
+            v128_t d3 = scene_sdf_simd(
+                wasm_f32x4_add(px, neg_eps), wasm_f32x4_add(py, neg_eps), wasm_f32x4_add(pz, neg_eps));
+            v128_t nx = wasm_f32x4_sub(wasm_f32x4_add(d0, d1), wasm_f32x4_add(d2, d3));
+            v128_t ny = wasm_f32x4_sub(wasm_f32x4_add(d0, d2), wasm_f32x4_add(d1, d3));
+            v128_t nz = wasm_f32x4_sub(wasm_f32x4_add(d1, d2), wasm_f32x4_add(d0, d3));
+            v128_t len_sq = wasm_f32x4_add(wasm_f32x4_add(
+                wasm_f32x4_mul(nx, nx), wasm_f32x4_mul(ny, ny)), wasm_f32x4_mul(nz, nz));
+            v128_t inv_len = wasm_f32x4_div(wasm_f32x4_splat(1.0f), wasm_f32x4_sqrt(len_sq));
+            nx = wasm_f32x4_mul(nx, inv_len);
+            ny = wasm_f32x4_mul(ny, inv_len);
+            nz = wasm_f32x4_mul(nz, inv_len);
+
+            v128_t one = wasm_f32x4_splat(1.0f);
+
+            // Accumulate contributions from each point light
+            for (u32 pl = 0; pl < point_light_count; pl++) {
+                // Light direction = light_pos - hit_pos
+                v128_t lx = wasm_f32x4_sub(pl_x_simd[pl], px);
+                v128_t ly = wasm_f32x4_sub(pl_y_simd[pl], py);
+                v128_t lz = wasm_f32x4_sub(pl_z_simd[pl], pz);
+
+                // Distance to light
+                v128_t dist_sq = wasm_f32x4_add(wasm_f32x4_add(
+                    wasm_f32x4_mul(lx, lx), wasm_f32x4_mul(ly, ly)), wasm_f32x4_mul(lz, lz));
+                v128_t dist = wasm_f32x4_sqrt(dist_sq);
+
+                // Normalize light direction
+                v128_t inv_dist = wasm_f32x4_div(one, wasm_f32x4_max(dist, wasm_f32x4_splat(0.001f)));
+                lx = wasm_f32x4_mul(lx, inv_dist);
+                ly = wasm_f32x4_mul(ly, inv_dist);
+                lz = wasm_f32x4_mul(lz, inv_dist);
+
+                // N dot L
+                v128_t ndotl_pl = wasm_f32x4_add(wasm_f32x4_add(
+                    wasm_f32x4_mul(nx, lx), wasm_f32x4_mul(ny, ly)), wasm_f32x4_mul(nz, lz));
+                ndotl_pl = wasm_f32x4_max(ndotl_pl, zero_simd);
+
+                // Linear attenuation: 1 / (1 + dist/radius)
+                v128_t atten = wasm_f32x4_div(one,
+                    wasm_f32x4_add(one, wasm_f32x4_div(dist, pl_radius_simd[pl])));
+
+                // Contribution = light_color * intensity * attenuation * ndotl
+                v128_t factor = wasm_f32x4_mul(wasm_f32x4_mul(pl_intensity_simd[pl], atten), ndotl_pl);
+                v128_t contrib_r = wasm_f32x4_mul(pl_r_simd[pl], factor);
+                v128_t contrib_g = wasm_f32x4_mul(pl_g_simd[pl], factor);
+                v128_t contrib_b = wasm_f32x4_mul(pl_b_simd[pl], factor);
+
+                // Accumulate
+                f32 tmp_r[4], tmp_g[4], tmp_b[4];
+                wasm_v128_store(tmp_r, contrib_r);
+                wasm_v128_store(tmp_g, contrib_g);
+                wasm_v128_store(tmp_b, contrib_b);
+                for (int i = 0; i < 4; i++) {
+                    pl_contrib_r[i] += tmp_r[i];
+                    pl_contrib_g[i] += tmp_g[i];
+                    pl_contrib_b[i] += tmp_b[i];
+                }
+            }
+        }
+
         for (int i = 0; i < 4; i++) {
             u32 idx = base + i;
             if (idx >= ray_count) break;
 
             if (hit_arr[i]) {
                 total_hits++;
-                out_r[idx] = bright_arr[i] * cr_arr[i];
-                out_g[idx] = bright_arr[i] * cg_arr[i];
-                out_b[idx] = bright_arr[i] * cb_arr[i];
+                // Base lighting (ambient + directional) * surface color + point light contributions * surface color
+                out_r[idx] = bright_arr[i] * cr_arr[i] + pl_contrib_r[i] * cr_arr[i];
+                out_g[idx] = bright_arr[i] * cg_arr[i] + pl_contrib_g[i] * cg_arr[i];
+                out_b[idx] = bright_arr[i] * cb_arr[i] + pl_contrib_b[i] * cb_arr[i];
             } else {
                 total_misses++;
                 out_r[idx] = bg_color[0];

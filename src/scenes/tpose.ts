@@ -22,7 +22,7 @@ import { seededRandom, createNoiseGenerator } from "../scene/utils";
 // =============================================================================
 
 const cameraDistance = 3.0;
-const cameraHeight = 0.5;
+const cameraHeight = 1.0;
 
 const config: SceneConfig = {
   camera: {
@@ -110,20 +110,34 @@ function update(t: number): SceneFrame {
 
   // Return objects + per-frame camera override via config
   // We need to return camera position for the renderer
-return {
-  objects,
-  camera: {
-    eye: [camX, cameraHeight, camZ] as Vec3,
-    at: [floatX, floatY, floatZ] as Vec3,
-  },
-  lighting: {
-    ambient: 0.25,
-    directional: {
-      direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
-      intensity: 0.75,
+  // Point light above Claude's head, orbits with camera
+  const lightOrbitRadius = 1.0;
+  const lightHeight = 1.5;
+  const lightX = Math.sin(angle + 0.5) * lightOrbitRadius;
+  const lightZ = -Math.cos(angle + 0.5) * lightOrbitRadius;
+
+  return {
+    objects,
+    camera: {
+      eye: [camX, cameraHeight, camZ] as Vec3,
+      at: [floatX, floatY, floatZ] as Vec3,
     },
-  },
-};
+    lighting: {
+      ambient: 0.3,
+      directional: {
+        direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
+        intensity: 0.3,
+      },
+      pointLights: [
+        {
+          position: [lightX + floatX, lightHeight + floatY, lightZ + floatZ] as Vec3,
+          color: [1.0, 0.9, 0.7] as Vec3,  // warm white
+          intensity: 1.0,
+          radius: 3.0,
+        },
+      ],
+    },
+  };
 }
 
 // =============================================================================

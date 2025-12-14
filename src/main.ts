@@ -51,6 +51,17 @@ interface WasmExports {
   get_shape_colors_ptr: () => number;
   get_shape_groups_ptr: () => number;
   get_group_blend_modes_ptr: () => number;
+  // Point light buffer pointers
+  get_point_light_x_ptr: () => number;
+  get_point_light_y_ptr: () => number;
+  get_point_light_z_ptr: () => number;
+  get_point_light_r_ptr: () => number;
+  get_point_light_g_ptr: () => number;
+  get_point_light_b_ptr: () => number;
+  get_point_light_intensity_ptr: () => number;
+  get_point_light_radius_ptr: () => number;
+  get_max_point_lights: () => number;
+  set_point_lights: (count: number) => void;
   // Performance metrics pointer
   get_perf_metrics_ptr: () => number;
   reset_perf_metrics: () => void;
@@ -102,6 +113,7 @@ interface WasmRenderer {
   maxRays: number;
   maxShapes: number;
   maxGroups: number;
+  maxPointLights: number;
   // Ray buffer views
   rayOx: Float32Array;
   rayOy: Float32Array;
@@ -120,6 +132,15 @@ interface WasmRenderer {
   shapeColors: Float32Array;
   shapeGroups: Uint8Array;
   groupBlendModes: Uint8Array;
+  // Point light buffer views
+  pointLightX: Float32Array;
+  pointLightY: Float32Array;
+  pointLightZ: Float32Array;
+  pointLightR: Float32Array;
+  pointLightG: Float32Array;
+  pointLightB: Float32Array;
+  pointLightIntensity: Float32Array;
+  pointLightRadius: Float32Array;
   // Performance metrics (16 floats)
   perfMetrics: Float32Array;
   // Composited output (bulk copy to OpenTUI)
@@ -166,12 +187,14 @@ async function loadWasm(): Promise<WasmRenderer> {
   const maxRays = exports.get_max_rays();
   const maxShapes = exports.get_max_shapes();
   const maxGroups = exports.get_max_groups();
+  const maxPointLights = exports.get_max_point_lights();
 
   return {
     exports,
     maxRays,
     maxShapes,
     maxGroups,
+    maxPointLights,
     // Ray buffers
     rayOx: new Float32Array(memory.buffer, exports.get_ray_ox_ptr(), maxRays),
     rayOy: new Float32Array(memory.buffer, exports.get_ray_oy_ptr(), maxRays),
@@ -190,6 +213,15 @@ async function loadWasm(): Promise<WasmRenderer> {
     shapeColors: new Float32Array(memory.buffer, exports.get_shape_colors_ptr(), maxShapes * 3),
     shapeGroups: new Uint8Array(memory.buffer, exports.get_shape_groups_ptr(), maxShapes),
     groupBlendModes: new Uint8Array(memory.buffer, exports.get_group_blend_modes_ptr(), maxGroups),
+    // Point light buffers
+    pointLightX: new Float32Array(memory.buffer, exports.get_point_light_x_ptr(), maxPointLights),
+    pointLightY: new Float32Array(memory.buffer, exports.get_point_light_y_ptr(), maxPointLights),
+    pointLightZ: new Float32Array(memory.buffer, exports.get_point_light_z_ptr(), maxPointLights),
+    pointLightR: new Float32Array(memory.buffer, exports.get_point_light_r_ptr(), maxPointLights),
+    pointLightG: new Float32Array(memory.buffer, exports.get_point_light_g_ptr(), maxPointLights),
+    pointLightB: new Float32Array(memory.buffer, exports.get_point_light_b_ptr(), maxPointLights),
+    pointLightIntensity: new Float32Array(memory.buffer, exports.get_point_light_intensity_ptr(), maxPointLights),
+    pointLightRadius: new Float32Array(memory.buffer, exports.get_point_light_radius_ptr(), maxPointLights),
     // Performance metrics (16 floats)
     perfMetrics: new Float32Array(memory.buffer, exports.get_perf_metrics_ptr(), 16),
     // Composited output (bulk copy to OpenTUI)
@@ -339,6 +371,22 @@ function renderFrame(
   const lighting = frame.lighting ?? scene.config.lighting;
   const [dx, dy, dz] = lighting.directional.direction;
   wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
+
+  // Set point lights
+  const pointLights = lighting.pointLights ?? [];
+  const numPointLights = Math.min(pointLights.length, wasm.maxPointLights);
+  for (let i = 0; i < numPointLights; i++) {
+    const pl = pointLights[i]!;
+    wasm.pointLightX[i] = pl.position[0];
+    wasm.pointLightY[i] = pl.position[1];
+    wasm.pointLightZ[i] = pl.position[2];
+    wasm.pointLightR[i] = pl.color[0];
+    wasm.pointLightG[i] = pl.color[1];
+    wasm.pointLightB[i] = pl.color[2];
+    wasm.pointLightIntensity[i] = pl.intensity;
+    wasm.pointLightRadius[i] = pl.radius;
+  }
+  wasm.exports.set_point_lights(numPointLights);
 
   // Do the raymarching in WASM
   t0 = performance.now();
@@ -733,6 +781,22 @@ function renderFrameBenchmark(
   const lighting = frame.lighting ?? scene.config.lighting;
   const [dx, dy, dz] = lighting.directional.direction;
   wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
+
+  // Set point lights
+  const pointLights = lighting.pointLights ?? [];
+  const numPointLights = Math.min(pointLights.length, wasm.maxPointLights);
+  for (let i = 0; i < numPointLights; i++) {
+    const pl = pointLights[i]!;
+    wasm.pointLightX[i] = pl.position[0];
+    wasm.pointLightY[i] = pl.position[1];
+    wasm.pointLightZ[i] = pl.position[2];
+    wasm.pointLightR[i] = pl.color[0];
+    wasm.pointLightG[i] = pl.color[1];
+    wasm.pointLightB[i] = pl.color[2];
+    wasm.pointLightIntensity[i] = pl.intensity;
+    wasm.pointLightRadius[i] = pl.radius;
+  }
+  wasm.exports.set_point_lights(numPointLights);
 
   // Do the raymarching in WASM
   t0 = performance.now();

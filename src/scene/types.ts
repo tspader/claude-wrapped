@@ -55,12 +55,20 @@ export interface FlatScene {
 // Config Types
 // =============================================================================
 
+export interface PointLight {
+  position: Vec3;
+  color: Vec3;
+  intensity: number;
+  radius: number;  // falloff distance
+}
+
 export interface LightingConfig {
   ambient: number;
   directional: {
     direction: Vec3;
     intensity: number;
   };
+  pointLights?: PointLight[];
 }
 
 export interface SceneConfig {
