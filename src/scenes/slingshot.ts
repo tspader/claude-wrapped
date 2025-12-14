@@ -298,6 +298,11 @@ function update(t: number): SceneFrame {
         },
       ],
     },
+    snow: {
+      count: 200,
+      baseSpeed: 10.0,
+      driftStrength: 2.0,
+    },
   };
 }
 
