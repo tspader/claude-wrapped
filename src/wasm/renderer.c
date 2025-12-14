@@ -14,14 +14,15 @@ typedef float f32;
 
 #define MAX_RAYS 16384      // 128x128 max resolution
 #define MAX_SHAPES 64       // max shapes in scene
-#define MAX_STEPS 16
+#define MAX_STEPS 64
 #define MAX_DIST 100.0f
-#define HIT_THRESHOLD 0.01f
+#define HIT_THRESHOLD 0.001f
 #define NORMAL_EPS 0.001f
 
 // Shape types
 #define SHAPE_SPHERE 0
 #define SHAPE_BOX 1
+#define SHAPE_CYLINDER 2
 
 // Performance metrics
 #define PERF_METRICS_SIZE 16
@@ -208,6 +209,19 @@ static f32 sdf_box_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 bx
     return outside + inside;
 }
 
+// Cylinder aligned along X-axis: params[0] = radius, params[1] = half-height
+static f32 sdf_cylinder_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 r, f32 h) {
+    f32 dy = py - cy;
+    f32 dz = pz - cz;
+    f32 d_radial = sqrtf_approx(dy*dy + dz*dz) - r;
+    f32 d_axial = absf(px - cx) - h;
+    f32 d_radial_pos = maxf(d_radial, 0.0f);
+    f32 d_axial_pos = maxf(d_axial, 0.0f);
+    f32 outside = sqrtf_approx(d_radial_pos*d_radial_pos + d_axial_pos*d_axial_pos);
+    f32 inside = minf(maxf(d_radial, d_axial), 0.0f);
+    return outside + inside;
+}
+
 static f32 sdf_smooth_union(f32 d1, f32 d2, f32 k) {
     f32 h = clampf(0.5f + 0.5f * (d2 - d1) / k, 0.0f, 1.0f);
     return d2 + (d1 - d2) * h - k * h * (1.0f - h);
@@ -248,6 +262,26 @@ static v128_t sdf_box_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy
     return wasm_f32x4_add(outside, inside);
 }
 
+// Cylinder aligned along X-axis: r = radius, h = half-height
+static v128_t sdf_cylinder_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy, v128_t cz, v128_t r, v128_t h) {
+    v128_t dy = wasm_f32x4_sub(py, cy);
+    v128_t dz = wasm_f32x4_sub(pz, cz);
+    v128_t radial_sq = wasm_f32x4_add(wasm_f32x4_mul(dy, dy), wasm_f32x4_mul(dz, dz));
+    v128_t d_radial = wasm_f32x4_sub(wasm_f32x4_sqrt(radial_sq), r);
+    v128_t d_axial = wasm_f32x4_sub(wasm_f32x4_abs(wasm_f32x4_sub(px, cx)), h);
+
+    v128_t zero = wasm_f32x4_splat(0.0f);
+    v128_t d_radial_pos = wasm_f32x4_max(d_radial, zero);
+    v128_t d_axial_pos = wasm_f32x4_max(d_axial, zero);
+
+    v128_t outside = wasm_f32x4_sqrt(wasm_f32x4_add(
+        wasm_f32x4_mul(d_radial_pos, d_radial_pos),
+        wasm_f32x4_mul(d_axial_pos, d_axial_pos)));
+    v128_t inside = wasm_f32x4_min(wasm_f32x4_max(d_radial, d_axial), zero);
+
+    return wasm_f32x4_add(outside, inside);
+}
+
 static v128_t sdf_smooth_union_simd(v128_t d1, v128_t d2, v128_t k) {
     v128_t half = wasm_f32x4_splat(0.5f);
     v128_t one = wasm_f32x4_splat(1.0f);
@@ -277,6 +311,8 @@ static v128_t eval_shape_simd(u32 i, v128_t px, v128_t py, v128_t pz) {
 
     if (shape_types[i] == SHAPE_SPHERE) {
         return sdf_sphere_simd(px, py, pz, cx, cy, cz, shape_p0[i]);
+    } else if (shape_types[i] == SHAPE_CYLINDER) {
+        return sdf_cylinder_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i]);
     } else {
         return sdf_box_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i], shape_p2[i]);
     }
@@ -476,6 +512,12 @@ void set_scene(u32 count, f32 k) {
         if (shape_types[i] == SHAPE_SPHERE) {
             f32 r = shape_params[i * 4];
             ex = ey = ez = r;
+        } else if (shape_types[i] == SHAPE_CYLINDER) {
+            // Cylinder along X: params[0]=radius, params[1]=half-height
+            f32 r = shape_params[i * 4];
+            f32 h = shape_params[i * 4 + 1];
+            ex = h;
+            ey = ez = r;
         } else {
             ex = shape_params[i * 4];
             ey = shape_params[i * 4 + 1];

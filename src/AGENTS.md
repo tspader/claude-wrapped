@@ -1,0 +1,37 @@
+- Never run the CLI in animated mode. It destroys your context window. Instead, render a single frame like this:
+```bash
+bun src/main.ts --time 0
+```
+-
+
+# summary
+Terminal raymarcher with OpenTUI integration. Renders 3D SDF scenes as ASCII art with UI overlays.
+
+# references
+## opentui
+- `createCliRenderer()` - creates renderer context
+- `FrameBufferRenderable` - low-level canvas for custom rendering
+- `frameBuffer.setCell(x, y, char, fgRGBA, bgRGBA, attrs)` - write cells
+- `BoxRenderable` - container with borders
+- `TextRenderable` - text display
+- `renderer.root.add()` - add renderables to scene
+
+## ours
+- `src/main.ts` - main entry, WASM renderer setup, UI
+- `src/camera.ts` - Camera class and Vec3 math helpers
+- `src/scene.ts` - scene config and data generation
+- `src/wasm/renderer.c` - WASM raymarching backend
+- `doc/opentui/packages/core/` - OpenTUI source reference
+
+# architecture
+- `doc/wasm.md` describes how the renderer backend works
+- `doc/scene.md` describes how we define the scene and pass it to the renderer
+- `src/main.ts` uses:
+  - OpenTUI's createCliRenderer(), FrameBufferRenderable for the raymarched scene
+  - BoxRenderable/TextRenderable for UI
+- The raymarcher outputs ASCII art with colored characters.
+- Canvas size detected from terminal
+
+# commands
+- bun src/main.ts --time 0      # single frame
+- bun src/main.ts -a            # animate (DON'T run in AI context)

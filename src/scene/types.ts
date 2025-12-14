@@ -11,6 +11,7 @@ export type Vec3 = [number, number, number];
 export const ShapeType = {
   SPHERE: 0,
   BOX: 1,
+  CYLINDER: 2,
 } as const;
 
 export const BlendMode = {

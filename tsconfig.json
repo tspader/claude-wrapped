@@ -2,6 +2,7 @@
   "exclude": ["doc", "node_modules"],
   "compilerOptions": {
     // Environment setup & latest features
+    "types": ["bun-types", "@cloudflare/workers-types"],
     "lib": ["ESNext"],
     "target": "ESNext",
     "module": "Preserve",

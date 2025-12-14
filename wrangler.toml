@@ -1,0 +1,8 @@
+name = "claude-wrapped"
+main = "backend/index.ts"
+compatibility_date = "2024-01-01"
+
+[[d1_databases]]
+binding = "wrapped"
+database_name = "wrapped"
+database_id = "cea07179-f762-4507-b0b4-4a27c2e6e55a"

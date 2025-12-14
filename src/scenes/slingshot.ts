@@ -30,7 +30,7 @@ const config: SceneConfig = {
     eye: [0.0, 2.0, -8.0] as Vec3,
     at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
-    fov: 40,
+    fov: 60,
   },
   render: {
     width: process.stdout.columns,
@@ -54,7 +54,7 @@ const config: SceneConfig = {
       },
     ],
   },
-  smoothK: 2.0,
+  smoothK: 0.0,
 };
 
 // Scene-specific config
@@ -62,11 +62,11 @@ const sceneParams = {
   seed: 42,
   colorBlendK: 0.5,
 
-  columns: {
-    x: 8.0,
-    spacingY: 3.5,
-    spheresPerColumn: 3,
-    sphereRadius: 1.8,
+  beams: {
+    paddingY: 0.0,
+    cylindersPerBeam: 3,
+    cylinderRadius: 1.0,
+    cylinderHalfHeight: 1.8,
   },
 
   animation: {
@@ -87,10 +87,10 @@ const sceneParams = {
     slingshot: {
       cycleDuration: 6.0,
       windupRatio: 0.25,
-      restY: 0,
-      launchOffsetX: 2.0,
-      launchOffsetY: -1.0,
-      peakY: 1.0,
+      restX: 0,
+      launchOffsetX: -1.0,
+      launchOffsetY: 1.5,
+      peakX: 1.0,
     },
   },
 };
@@ -127,7 +127,7 @@ let state: SceneState | null = null;
 
 function initState(): SceneState {
   const rng = seededRandom(sceneParams.seed);
-  const { x: columnX, spacingY, spheresPerColumn, sphereRadius } = sceneParams.columns;
+  const { paddingY, cylindersPerBeam, cylinderRadius } = sceneParams.beams;
 
   const basePositions: Vec3[] = [];
   const baseSizes: number[] = [];
@@ -135,12 +135,24 @@ function initState(): SceneState {
   const freqMultipliers: number[] = [];
   const noiseOffsets: Vec3[] = [];
 
-  const columnYStart = -((spheresPerColumn - 1) / 2) * spacingY;
+  // Calculate visible area from camera (at z=0, camera at z=-8, fov=60)
+  const fovRad = (60 / 2) * Math.PI / 180;
+  const visibleHalfHeight = 8 * Math.tan(fovRad);
+  const visibleHalfWidth = visibleHalfHeight; // Assume ~1:1 aspect for now, will extend past edges
 
+  // Space cylinders evenly across visible width, accounting for radius at edges
+  const beamWidth = visibleHalfWidth * 2;
+  const usableWidth = beamWidth - 2 * cylinderRadius;
+  const spacing = cylindersPerBeam > 1 ? usableWidth / (cylindersPerBeam - 1) : 0;
+  const beamXStart = -visibleHalfWidth + cylinderRadius;
+
+  const beamY = visibleHalfHeight - paddingY - cylinderRadius;
+
+  // Top and bottom beams (horizontal rows of cylinders)
   for (const sign of [-1, 1]) {
-    for (let i = 0; i < spheresPerColumn; i++) {
-      basePositions.push([sign * columnX, columnYStart + i * spacingY, 0]);
-      baseSizes.push(sphereRadius);
+    for (let i = 0; i < cylindersPerBeam; i++) {
+      basePositions.push([beamXStart + i * spacing, sign * beamY, 0]);
+      baseSizes.push(cylinderRadius);
       phaseOffsets.push(rng() * 2 * Math.PI);
       freqMultipliers.push(rng() * 0.5 + 0.75);
       noiseOffsets.push([rng() * 1000, rng() * 1000, rng() * 1000]);
@@ -166,25 +178,29 @@ function initState(): SceneState {
 
 function getClaudePosition(t: number): Vec3 {
   const { slingshot, z } = sceneParams.claude;
-  const { cycleDuration, windupRatio, restY, launchOffsetX, launchOffsetY, peakY } = slingshot;
-  const columnX = sceneParams.columns.x;
+  const { cycleDuration, windupRatio, restX, launchOffsetX, launchOffsetY, peakX } = slingshot;
+  const { paddingY, cylinderRadius } = sceneParams.beams;
+  const visibleHalfHeight = 8 * Math.tan((60 / 2) * Math.PI / 180);
+  const beamY = visibleHalfHeight - paddingY - cylinderRadius;
 
   const cycleTime = t % cycleDuration;
   const windupDuration = cycleDuration * windupRatio;
   const flightDuration = cycleDuration * (1 - windupRatio);
 
   const cycleIndex = Math.floor(t / cycleDuration);
-  const startX = cycleIndex % 2 === 0 ? columnX : -columnX;
-  const targetX = -startX;
+  // Alternate between top (+beamY) and bottom (-beamY)
+  const startY = cycleIndex % 2 === 0 ? beamY : -beamY;
+  const targetY = -startY;
 
-  const launchX = startX + (startX > 0 ? launchOffsetX : -launchOffsetX);
-  const launchY = restY + launchOffsetY;
+  // Pull back past the beam before launching
+  const launchY = startY + (startY > 0 ? launchOffsetY : -launchOffsetY);
+  const launchX = restX + launchOffsetX;
 
   if (cycleTime < windupDuration) {
     const windupT = easeInOutQuad(cycleTime / windupDuration);
     return [
-      startX + (launchX - startX) * windupT,
-      restY + (launchY - restY) * windupT,
+      restX + (launchX - restX) * windupT,
+      startY + (launchY - startY) * windupT,
       z,
     ];
   } else {
@@ -192,11 +208,12 @@ function getClaudePosition(t: number): Vec3 {
     const flightT = flightTime / flightDuration;
 
     const easedT = easeOutQuad(flightT);
-    const x = launchX + (targetX - launchX) * easedT;
+    const y = launchY + (targetY - launchY) * easedT;
 
-    const peakOffset = peakY - launchY;
+    // Horizontal wobble during flight (parabolic arc on X)
+    const peakOffset = peakX - launchX;
     const parabola = 4 * easedT * (1 - easedT);
-    const y = launchY + peakOffset * parabola + (restY - launchY) * easedT;
+    const x = launchX + peakOffset * parabola + (restX - launchX) * easedT;
 
     return [x, y, z];
   }
@@ -225,7 +242,8 @@ function update(t: number): ObjectDef[] {
 
   const objects: ObjectDef[] = [];
 
-  // Blob spheres
+  // Blob cylinders (oriented along X-axis for left-to-right)
+  const { cylinderHalfHeight } = sceneParams.beams;
   for (let i = 0; i < basePositions.length; i++) {
     const [bx, by, bz] = basePositions[i]!;
     const [nx, ny, nz] = noiseOffsets[i]!;
@@ -243,7 +261,7 @@ function update(t: number): ObjectDef[] {
     const radius = Math.max(0.1, baseSizes[i]! + osc + noiseSize);
 
     objects.push({
-      shape: { type: ShapeType.SPHERE, params: [radius], color: colors.blob },
+      shape: { type: ShapeType.CYLINDER, params: [radius, cylinderHalfHeight], color: colors.blob },
       position: pos,
       group: SceneGroups.BLOBS,
     });
