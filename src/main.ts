@@ -15,7 +15,17 @@ import type { OptimizedBuffer } from "@opentui/core";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { makeSceneData, compileScene, config, sceneGroupDefs, type FlatScene } from "./scene";
+import {
+  compileScene,
+  setActiveScene,
+  getActiveScene,
+  type FlatScene,
+  type Vec3 as SceneVec3,
+} from "./scene";
+
+// Register all scenes (side effect: adds to registry)
+import "./scenes/slingshot";
+import "./scenes/tpose";
 
 // =============================================================================
 // WASM Module Interface
@@ -290,12 +300,13 @@ function renderFrame(
   wasm.exports.reset_perf_metrics();
 
   // Compile scene at time t and load to WASM
+  const scene = getActiveScene();
   let t0 = performance.now();
-  const objects = makeSceneData(t);
+  const objects = scene.update(t);
   timings.sceneDataMs = performance.now() - t0;
 
   t0 = performance.now();
-  const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
+  const flatScene = compileScene(objects, scene.groupDefs, scene.config.smoothK);
   timings.compileSceneMs = performance.now() - t0;
 
   t0 = performance.now();
@@ -438,6 +449,7 @@ function parseArgs(): {
   width: number | null;
   height: number | null;
   scale: number;
+  scene: string;
 } {
   const args = process.argv.slice(2);
   const result = {
@@ -448,6 +460,7 @@ function parseArgs(): {
     width: null as number | null,
     height: null as number | null,
     scale: 1,
+    scene: "slingshot",
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -481,6 +494,9 @@ function parseArgs(): {
         result.scale = parseInt(args[++i] || "1", 10);
         if (result.scale < 1) result.scale = 1;
         break;
+      case "--scene":
+        result.scene = args[++i] || "slingshot";
+        break;
       case "--help":
         console.log(`Usage: bun src/main.ts [options]
 
@@ -492,6 +508,7 @@ Options:
   -w, --width <int>     Render width for benchmark (default: 256)
   -h, --height <int>    Render height for benchmark (default: 64)
   -s, --scale <int>     Upscale factor (default: 1, render at 1/scale resolution)
+  --scene <name>        Scene to load (default: slingshot)
   --help                Show this help`);
         process.exit(0);
     }
@@ -623,12 +640,13 @@ function renderFrameBenchmark(
   wasm.exports.reset_perf_metrics();
 
   // Compile scene at time t and load to WASM
+  const scene = getActiveScene();
   let t0 = performance.now();
-  const objects = makeSceneData(t);
+  const objects = scene.update(t);
   timings.sceneDataMs = performance.now() - t0;
 
   t0 = performance.now();
-  const flatScene = compileScene(objects, sceneGroupDefs, config.scene.smoothK);
+  const flatScene = compileScene(objects, scene.groupDefs, scene.config.smoothK);
   timings.compileSceneMs = performance.now() - t0;
 
   t0 = performance.now();
@@ -678,6 +696,10 @@ async function main(): Promise<void> {
 
   // Load WASM module
   const wasm = await loadWasm();
+
+  // Initialize scene
+  const scene = setActiveScene(args.scene);
+  const { config } = scene;
 
   // Benchmark mode - no renderer needed
   if (args.bench) {
@@ -787,12 +809,10 @@ async function main(): Promise<void> {
   let worstFrameTime = 0;
   let medianFrameTime = 0;
   let frameCount = 0;
-  let lastTimings: FrameTimings | null = null;
 
   function updateStats(timings: FrameTimings): void {
     frameTimes.push(timings.totalMs);
     frameCount++;
-    lastTimings = timings;
 
     // Update stats every FPS frames
     if (frameCount % args.fps === 0) {

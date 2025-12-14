@@ -14,7 +14,7 @@ typedef float f32;
 
 #define MAX_RAYS 16384      // 128x128 max resolution
 #define MAX_SHAPES 64       // max shapes in scene
-#define MAX_STEPS 32
+#define MAX_STEPS 16
 #define MAX_DIST 100.0f
 #define HIT_THRESHOLD 0.01f
 #define NORMAL_EPS 0.001f
