@@ -40,15 +40,16 @@ static f32 out_r[MAX_RAYS];
 static f32 out_g[MAX_RAYS];
 static f32 out_b[MAX_RAYS];
 
-// Composited output buffer (for terminal)
-// Layout: [char, r, g, b] per cell (4 bytes each) - legacy format
-static u8 composited[MAX_RAYS * 4];
-
 // OpenTUI-compatible output buffers (SoA layout)
 // char: u32 per cell (unicode codepoint)
 // fg: 4 x f32 per cell (RGBA normalized floats)
 static u32 out_char[MAX_RAYS];
 static f32 out_fg[MAX_RAYS * 4];  // r, g, b, a per cell
+
+// Upscaled output buffers (for rendering at lower res then upscaling)
+// Same max size as native output since terminal size is the limiting factor
+static u32 upscaled_char[MAX_RAYS];
+static f32 upscaled_fg[MAX_RAYS * 4];  // r, g, b, a per cell
 
 // Background color
 static f32 bg_color[3];
@@ -756,68 +757,20 @@ void march_rays(void) {
 u32 get_max_rays(void) { return MAX_RAYS; }
 
 // =============================================================================
-// Compositing (RGB floats -> ASCII + color bytes)
+// Compositing (RGB floats -> ASCII char + RGBA floats for OpenTUI)
 // =============================================================================
 
-u8* get_composited_ptr(void) { return composited; }
 u32* get_out_char_ptr(void) { return out_char; }
 f32* get_out_fg_ptr(void) { return out_fg; }
 
 // ASCII ramp: " .:-=+*#%@" (10 chars)
 static const char ascii_ramp[10] = {' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'};
 
-// Bayer 2x2 dither matrix (scaled by 0.15)
-// [0.0, 0.5] -> [-0.075, 0.0]
-// [0.75, 0.25] -> [0.0375, -0.0375]
+// Bayer 2x2 dither matrix
 static const f32 bayer2x2[4] = {-0.075f, 0.0f, 0.0375f, -0.0375f};
 
-// Legacy composite - outputs [char, r, g, b] bytes
+// Composite RGB to ASCII + RGBA (directly compatible with OpenTUI bulk copy)
 void composite(u32 width, u32 height) {
-    u32 count = width * height;
-    if (count > MAX_RAYS) count = MAX_RAYS;
-    
-    for (u32 i = 0; i < count; i++) {
-        u32 row = i / width;
-        u32 col = i % width;
-        
-        f32 r = out_r[i];
-        f32 g = out_g[i];
-        f32 b = out_b[i];
-        
-        // Brightness with dither
-        f32 brightness = (r + g + b) * 0.333333f;
-        u32 dither_idx = (row & 1) * 2 + (col & 1);
-        brightness += bayer2x2[dither_idx];
-        
-        // Clamp and map to ASCII
-        if (brightness < 0.0f) brightness = 0.0f;
-        if (brightness > 1.0f) brightness = 1.0f;
-        
-        u32 base = i * 4;
-        
-        // Check if pixel has color (not background)
-        if (r > 0.04f || g > 0.04f || b > 0.04f) {
-            i32 char_idx = (i32)(brightness * 9.0f);
-            if (char_idx < 0) char_idx = 0;
-            if (char_idx > 9) char_idx = 9;
-            
-            composited[base] = ascii_ramp[char_idx];
-            composited[base + 1] = (u8)(r * 255.0f);
-            composited[base + 2] = (u8)(g * 255.0f);
-            composited[base + 3] = (u8)(b * 255.0f);
-        } else {
-            // Dark background: '@' with dark color
-            composited[base] = '@';
-            composited[base + 1] = 8;   // 0.03 * 255 ≈ 8
-            composited[base + 2] = 13;  // 0.05 * 255 ≈ 13
-            composited[base + 3] = 10;  // 0.04 * 255 ≈ 10
-        }
-    }
-}
-
-// OpenTUI-compatible composite - outputs to out_char[] and out_fg[] arrays
-// These can be bulk-copied via TypedArray.set() for zero-copy performance
-void composite_opentui(u32 width, u32 height) {
     u32 count = width * height;
     if (count > MAX_RAYS) count = MAX_RAYS;
     
@@ -850,7 +803,7 @@ void composite_opentui(u32 width, u32 height) {
             out_fg[fg_base]     = r;
             out_fg[fg_base + 1] = g;
             out_fg[fg_base + 2] = b;
-            out_fg[fg_base + 3] = 1.0f;  // alpha
+            out_fg[fg_base + 3] = 1.0f;
         } else {
             // Dark background: '@' with dark color
             out_char[i] = '@';
@@ -858,6 +811,52 @@ void composite_opentui(u32 width, u32 height) {
             out_fg[fg_base + 1] = 0.05f;
             out_fg[fg_base + 2] = 0.04f;
             out_fg[fg_base + 3] = 1.0f;
+        }
+    }
+}
+
+// =============================================================================
+// Upscaling (nearest neighbor from native to output resolution)
+// =============================================================================
+
+u32* get_upscaled_char_ptr(void) { return upscaled_char; }
+f32* get_upscaled_fg_ptr(void) { return upscaled_fg; }
+u32 get_max_upscaled(void) { return MAX_RAYS; }
+
+// Nearest-neighbor upscale from out_char/out_fg to upscaled_char/upscaled_fg
+// native_width/height: dimensions of the composited output (out_char/out_fg)
+// output_width/height: dimensions of the upscaled output (terminal size)
+// scale: integer scale factor (output = native * scale, roughly)
+void upscale(u32 native_width, u32 native_height, u32 output_width, u32 output_height, u32 scale) {
+    u32 out_count = output_width * output_height;
+    if (out_count > MAX_RAYS) out_count = MAX_RAYS;
+    
+    for (u32 out_row = 0; out_row < output_height; out_row++) {
+        // Map output row to native row (nearest neighbor)
+        u32 native_row = out_row / scale;
+        if (native_row >= native_height) native_row = native_height - 1;
+        
+        for (u32 out_col = 0; out_col < output_width; out_col++) {
+            u32 out_idx = out_row * output_width + out_col;
+            if (out_idx >= MAX_RAYS) break;
+            
+            // Map output col to native col (nearest neighbor)
+            u32 native_col = out_col / scale;
+            if (native_col >= native_width) native_col = native_width - 1;
+            
+            u32 native_idx = native_row * native_width + native_col;
+            if (native_idx >= MAX_RAYS) native_idx = MAX_RAYS - 1;
+            
+            // Copy char
+            upscaled_char[out_idx] = out_char[native_idx];
+            
+            // Copy fg (4 floats)
+            u32 out_fg_base = out_idx * 4;
+            u32 native_fg_base = native_idx * 4;
+            upscaled_fg[out_fg_base]     = out_fg[native_fg_base];
+            upscaled_fg[out_fg_base + 1] = out_fg[native_fg_base + 1];
+            upscaled_fg[out_fg_base + 2] = out_fg[native_fg_base + 2];
+            upscaled_fg[out_fg_base + 3] = out_fg[native_fg_base + 3];
         }
     }
 }
