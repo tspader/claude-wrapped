@@ -3,12 +3,17 @@ import {
   TextRenderable,
   RGBA,
   t,
-  green,
+  fg,
   dim,
+  bold,
   StyledText,
   type TextChunk,
 } from "@opentui/core";
 import { SLIDES } from "./slides";
+import { CLAUDE_LOGO, WRAPPED_LOGO, LOGO_WIDTH } from "./logo";
+
+// Off-white cursor color
+const cursorStyle = fg("#CCCCCC");
 
 // Extract plain text from StyledText chunks
 function getPlainText(styled: StyledText): string {
@@ -19,10 +24,10 @@ function getPlainText(styled: StyledText): string {
 function sliceStyledText(styled: StyledText, maxChars: number): StyledText {
   const chunks: TextChunk[] = [];
   let remaining = maxChars;
-  
+
   for (const chunk of styled.chunks) {
     if (remaining <= 0) break;
-    
+
     if (chunk.text.length <= remaining) {
       chunks.push(chunk);
       remaining -= chunk.text.length;
@@ -34,7 +39,7 @@ function sliceStyledText(styled: StyledText, maxChars: number): StyledText {
       remaining = 0;
     }
   }
-  
+
   return new StyledText(chunks);
 }
 
@@ -60,11 +65,15 @@ export class StatsBox {
   container: BoxRenderable;
   titleText: TextRenderable;
   contentText: TextRenderable;
-  
+
+  // Layout
+  private boxWidth: number = 0;
+  private useLogo: boolean = false;
+
   // State
   private statsData: any = {};
   private currentSlideIndex: number = 0;
-  
+
   // Typing State
   private fullStyled: StyledText = new StyledText([]);
   private plainText: string = "";
@@ -74,11 +83,19 @@ export class StatsBox {
   private cursorBlinkTimer: number = 0;
   private showCursor: boolean = true;
   private typingFinished: boolean = false;
-  
+
   // Prompt State
   private selectedOptionIndex: number = 0;
 
+  // Debug Stats
+  private debugStats: string = "";
+
   constructor(renderer: any, width: number, height: number, left: number, top: number) {
+    this.boxWidth = width;
+    // Account for border (2) and padding (2) on each side
+    const innerWidth = width - 4;
+    this.useLogo = innerWidth >= LOGO_WIDTH;
+
     this.container = new BoxRenderable(renderer, {
       id: "stats-box",
       width,
@@ -96,7 +113,7 @@ export class StatsBox {
 
     this.titleText = new TextRenderable(renderer, {
       id: "title-text",
-      content: "CLAUDE WRAPPED",
+      content: this.buildTitle(),
       fg: "#FFFFFF",
     });
 
@@ -111,6 +128,30 @@ export class StatsBox {
     this.container.add(this.contentText);
 
     this.startSlide(0);
+  }
+
+  private buildTitle(): StyledText | string {
+    const innerWidth = this.boxWidth - 4;
+    
+    if (this.useLogo) {
+      // Center each line of CLAUDE, then WRAPPED
+      const lines: string[] = [];
+      for (const line of CLAUDE_LOGO) {
+        const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
+        lines.push(" ".repeat(pad) + line);
+      }
+      lines.push(""); // blank line between
+      for (const line of WRAPPED_LOGO) {
+        const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
+        lines.push(" ".repeat(pad) + line);
+      }
+      return lines.join("\n");
+    } else {
+      // Centered bold text
+      const title = "CLAUDE WRAPPED";
+      const pad = Math.max(0, Math.floor((innerWidth - title.length) / 2));
+      return t`${" ".repeat(pad)}${bold(title)}`;
+    }
   }
 
   public setStatsData(data: any) {
@@ -134,10 +175,10 @@ export class StatsBox {
     this.currentSlideIndex = index;
     const slide = SLIDES[index];
     if (!slide) return;
-    
+
     this.fullStyled = slide.getText(this.statsData);
     this.plainText = getPlainText(this.fullStyled);
-    
+
     if (slide.noTyping) {
       this.displayIndex = this.plainText.length;
       this.typingFinished = true;
@@ -147,7 +188,7 @@ export class StatsBox {
       this.typeTimer = 0;
       this.nextCharDelay = 50;
     }
-    
+
     this.selectedOptionIndex = 0;
     this.renderContent();
 
@@ -181,7 +222,7 @@ export class StatsBox {
 
         // Base delay with jitter: 30-60ms
         this.nextCharDelay = 30 + Math.random() * 30;
-        
+
         // Pause on punctuation
         if (this.displayIndex > 0 && this.displayIndex <= this.plainText.length) {
           const lastChar = this.plainText[this.displayIndex - 1];
@@ -209,11 +250,11 @@ export class StatsBox {
 
     // Slice styled text to visible characters
     let content = sliceStyledText(this.fullStyled, this.displayIndex);
-    
+
     // Add options if prompt and typing finished
     if (this.typingFinished && slide.type === "prompt" && slide.options) {
       const optionParts: (StyledText | TextChunk)[] = [content, plainChunk("\n\n")];
-      
+
       slide.options.forEach((opt, i) => {
         const isSelected = i === this.selectedOptionIndex;
         const marker = isSelected ? "> " : "  ";
@@ -227,13 +268,18 @@ export class StatsBox {
           optionParts.push(plainChunk("   "));
         }
       });
-      
+
       content = concatStyledText(...optionParts);
+    }
+
+    // Add debug stats when on "done" slide
+    if (slide.id === "done" && this.debugStats) {
+      content = concatStyledText(content, plainChunk("\n" + this.debugStats));
     }
 
     // Blinking cursor
     if (this.showCursor) {
-      content = concatStyledText(content, green("█"));
+      content = concatStyledText(content, cursorStyle("█"));
     }
 
     this.contentText.content = content;
@@ -266,7 +312,7 @@ export class StatsBox {
           this.nextSlide();
         } else {
           if (slide.id === "intro") {
-            this.statsData = {}; 
+            this.statsData = {};
             const doneIdx = SLIDES.findIndex(s => s.id === "done");
             this.startSlide(doneIdx);
             this.fullStyled = t`Visualization only mode.`;
@@ -286,7 +332,12 @@ export class StatsBox {
     }
   }
 
-  public setDebugStats(_text: string) {
-    // Ignored
+  public setDebugStats(text: string) {
+    this.debugStats = text;
+    // Only display debug stats when on the "done" slide (visualization mode)
+    const slide = SLIDES[this.currentSlideIndex];
+    if (slide && slide.id === "done") {
+      this.renderContent();
+    }
   }
 }
