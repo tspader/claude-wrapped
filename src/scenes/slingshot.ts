@@ -289,12 +289,12 @@ function update(t: number): SceneFrame {
           intensity: 1.2,
           radius: 4.0,
         },
-        // Light following Claude
+        // Warm white point light directly in front of Claude
         {
-          position: [claudePos[0], claudePos[1] + 0.5, claudePos[2] - 1.0] as Vec3,
-          color: [1.0, 0.95, 0.8] as Vec3,  // warm white
-          intensity: 1.0,
-          radius: 3.0,
+          position: [claudePos[0], claudePos[1], claudePos[2] - 2.5] as Vec3,
+          color: [1.0, 0.95, 0.85] as Vec3,  // warm white
+          intensity: 1.5,
+          radius: 4.0,
         },
       ],
     },

@@ -1,10 +1,12 @@
 /**
- * Claude logo model - 6 boxes (body, 1 arm bar, 4 legs).
+ * Claude logo model - 6 boxes (body, 1 arm bar, 4 legs) + santa hat.
  */
 
 import { ShapeType, type Vec3, type ObjectDef } from "../types";
 
 export const CLAUDE_COLOR: Vec3 = [0.85, 0.45, 0.35];
+export const SANTA_RED: Vec3 = [0.8, 0.1, 0.1];
+export const SANTA_WHITE: Vec3 = [0.85, 0.85, 0.85];
 
 /**
  * Returns Claude logo as 6 box ObjectDefs (body, 1 arm bar, 4 legs).
@@ -72,6 +74,25 @@ export function getClaudeBoxes(
     {
       shape: { type: ShapeType.BOX, params: [legW, legH, legD], color: CLAUDE_COLOR },
       position: [px + legX + legSpacing / 2, py + legY, pz],
+      group,
+    },
+    // === SANTA HAT ===
+    // White fluff band (thin cylinder with circular face up)
+    {
+      shape: { type: ShapeType.CYLINDER_Y, params: [0.24 * scale, 0.06 * scale], color: SANTA_WHITE },
+      position: [px, py + bodyH / 2 + 0.20 * scale, pz],
+      group,
+    },
+    // Red cone body of hat
+    {
+      shape: { type: ShapeType.CONE, params: [0.20 * scale, 0.38 * scale], color: SANTA_RED },
+      position: [px, py + bodyH / 2 + 0.19 * scale, pz],
+      group,
+    },
+    // White pom-pom on top (sphere)
+    {
+      shape: { type: ShapeType.SPHERE, params: [0.08 * scale], color: SANTA_WHITE },
+      position: [px, py + bodyH / 2 + 0.60 * scale, pz],
       group,
     },
   ];

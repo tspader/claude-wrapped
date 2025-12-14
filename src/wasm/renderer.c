@@ -22,7 +22,9 @@ typedef float f32;
 // Shape types
 #define SHAPE_SPHERE 0
 #define SHAPE_BOX 1
-#define SHAPE_CYLINDER 2
+#define SHAPE_CYLINDER 2    // along X-axis
+#define SHAPE_CONE 3        // along Y-axis (tip up)
+#define SHAPE_CYLINDER_Y 4  // along Y-axis
 
 // Performance metrics
 #define PERF_METRICS_SIZE 16
@@ -252,6 +254,71 @@ static f32 sdf_cylinder_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f
     return outside + inside;
 }
 
+// Cone along Y-axis (tip pointing up): params[0] = base radius, params[1] = height
+// Base at cy, tip at cy + height
+static f32 sdf_cone_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 r, f32 h) {
+    f32 dx = px - cx;
+    f32 dy = py - cy;
+    f32 dz = pz - cz;
+    
+    // 2D distance in xz plane
+    f32 q = sqrtf_approx(dx*dx + dz*dz);
+    
+    // Cone parameters: angle from base radius and height
+    // c = (sin, cos) of cone angle
+    f32 cone_len = sqrtf_approx(r*r + h*h);
+    f32 sin_a = r / cone_len;
+    f32 cos_a = h / cone_len;
+    
+    // Dot products for cone SDF
+    f32 d1 = q * cos_a - dy * sin_a;  // distance to cone surface (radial component)
+    f32 d2 = q * sin_a + dy * cos_a;  // distance along cone axis
+    
+    // Clamp to cone bounds
+    f32 d1_clamped = maxf(d1, 0.0f);
+    f32 d2_clamped = clampf(d2, 0.0f, cone_len);
+    
+    // Check if below base plane
+    if (dy < 0.0f) {
+        // Below base: distance to base disk
+        f32 base_radial = maxf(q - r, 0.0f);
+        f32 base_axial = -dy;
+        return sqrtf_approx(base_radial*base_radial + base_axial*base_axial);
+    }
+    
+    // Check if above tip
+    if (dy > h) {
+        // Above tip: distance to tip point
+        return sqrtf_approx(q*q + (dy-h)*(dy-h));
+    }
+    
+    // Inside cone bounds: signed distance to surface
+    // Radius at this height
+    f32 r_at_y = r * (1.0f - dy / h);
+    f32 dist_to_surface = q - r_at_y;
+    
+    // If outside, compute proper distance
+    if (dist_to_surface > 0.0f) {
+        return dist_to_surface * cos_a;
+    }
+    
+    // Inside: negative distance
+    return dist_to_surface * cos_a;
+}
+
+// Cylinder aligned along Y-axis: params[0] = radius, params[1] = half-height
+static f32 sdf_cylinder_y_scalar(f32 px, f32 py, f32 pz, f32 cx, f32 cy, f32 cz, f32 r, f32 h) {
+    f32 dx = px - cx;
+    f32 dz = pz - cz;
+    f32 d_radial = sqrtf_approx(dx*dx + dz*dz) - r;
+    f32 d_axial = absf(py - cy) - h;
+    f32 d_radial_pos = maxf(d_radial, 0.0f);
+    f32 d_axial_pos = maxf(d_axial, 0.0f);
+    f32 outside = sqrtf_approx(d_radial_pos*d_radial_pos + d_axial_pos*d_axial_pos);
+    f32 inside = minf(maxf(d_radial, d_axial), 0.0f);
+    return outside + inside;
+}
+
 static f32 sdf_smooth_union(f32 d1, f32 d2, f32 k) {
     f32 h = clampf(0.5f + 0.5f * (d2 - d1) / k, 0.0f, 1.0f);
     return d2 + (d1 - d2) * h - k * h * (1.0f - h);
@@ -312,6 +379,74 @@ static v128_t sdf_cylinder_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128
     return wasm_f32x4_add(outside, inside);
 }
 
+// Cone along Y-axis (tip pointing up): r = base radius, h = height
+// Base at cy, tip at cy + h
+static v128_t sdf_cone_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy, v128_t cz, v128_t r, v128_t h) {
+    v128_t dx = wasm_f32x4_sub(px, cx);
+    v128_t dy = wasm_f32x4_sub(py, cy);
+    v128_t dz = wasm_f32x4_sub(pz, cz);
+    
+    v128_t zero = wasm_f32x4_splat(0.0f);
+    v128_t one = wasm_f32x4_splat(1.0f);
+    
+    // 2D distance in xz plane
+    v128_t q = wasm_f32x4_sqrt(wasm_f32x4_add(wasm_f32x4_mul(dx, dx), wasm_f32x4_mul(dz, dz)));
+    
+    // Cone angle
+    v128_t cone_len_sq = wasm_f32x4_add(wasm_f32x4_mul(r, r), wasm_f32x4_mul(h, h));
+    v128_t cone_len = wasm_f32x4_sqrt(cone_len_sq);
+    v128_t sin_a = wasm_f32x4_div(r, cone_len);
+    v128_t cos_a = wasm_f32x4_div(h, cone_len);
+    
+    // Radius at current height
+    v128_t t = wasm_f32x4_max(zero, wasm_f32x4_min(one, wasm_f32x4_div(dy, h)));
+    v128_t r_at_y = wasm_f32x4_mul(r, wasm_f32x4_sub(one, t));
+    
+    // Distance to cone surface
+    v128_t dist_to_surface = wasm_f32x4_sub(q, r_at_y);
+    v128_t cone_dist = wasm_f32x4_mul(dist_to_surface, cos_a);
+    
+    // Below base: distance to base disk
+    v128_t below = wasm_f32x4_lt(dy, zero);
+    v128_t base_radial = wasm_f32x4_max(wasm_f32x4_sub(q, r), zero);
+    v128_t base_axial = wasm_f32x4_sub(zero, dy);
+    v128_t base_dist = wasm_f32x4_sqrt(wasm_f32x4_add(
+        wasm_f32x4_mul(base_radial, base_radial),
+        wasm_f32x4_mul(base_axial, base_axial)));
+    
+    // Above tip: distance to tip point
+    v128_t above = wasm_f32x4_gt(dy, h);
+    v128_t dy_h = wasm_f32x4_sub(dy, h);
+    v128_t tip_dist = wasm_f32x4_sqrt(wasm_f32x4_add(wasm_f32x4_mul(q, q), wasm_f32x4_mul(dy_h, dy_h)));
+    
+    // Select appropriate distance
+    v128_t result = cone_dist;
+    result = wasm_v128_bitselect(base_dist, result, below);
+    result = wasm_v128_bitselect(tip_dist, result, above);
+    
+    return result;
+}
+
+// Cylinder aligned along Y-axis: r = radius, h = half-height
+static v128_t sdf_cylinder_y_simd(v128_t px, v128_t py, v128_t pz, v128_t cx, v128_t cy, v128_t cz, v128_t r, v128_t h) {
+    v128_t dx = wasm_f32x4_sub(px, cx);
+    v128_t dz = wasm_f32x4_sub(pz, cz);
+    v128_t radial_sq = wasm_f32x4_add(wasm_f32x4_mul(dx, dx), wasm_f32x4_mul(dz, dz));
+    v128_t d_radial = wasm_f32x4_sub(wasm_f32x4_sqrt(radial_sq), r);
+    v128_t d_axial = wasm_f32x4_sub(wasm_f32x4_abs(wasm_f32x4_sub(py, cy)), h);
+
+    v128_t zero = wasm_f32x4_splat(0.0f);
+    v128_t d_radial_pos = wasm_f32x4_max(d_radial, zero);
+    v128_t d_axial_pos = wasm_f32x4_max(d_axial, zero);
+
+    v128_t outside = wasm_f32x4_sqrt(wasm_f32x4_add(
+        wasm_f32x4_mul(d_radial_pos, d_radial_pos),
+        wasm_f32x4_mul(d_axial_pos, d_axial_pos)));
+    v128_t inside = wasm_f32x4_min(wasm_f32x4_max(d_radial, d_axial), zero);
+
+    return wasm_f32x4_add(outside, inside);
+}
+
 static v128_t sdf_smooth_union_simd(v128_t d1, v128_t d2, v128_t k) {
     v128_t half = wasm_f32x4_splat(0.5f);
     v128_t one = wasm_f32x4_splat(1.0f);
@@ -343,6 +478,10 @@ static v128_t eval_shape_simd(u32 i, v128_t px, v128_t py, v128_t pz) {
         return sdf_sphere_simd(px, py, pz, cx, cy, cz, shape_p0[i]);
     } else if (shape_types[i] == SHAPE_CYLINDER) {
         return sdf_cylinder_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i]);
+    } else if (shape_types[i] == SHAPE_CONE) {
+        return sdf_cone_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i]);
+    } else if (shape_types[i] == SHAPE_CYLINDER_Y) {
+        return sdf_cylinder_y_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i]);
     } else {
         return sdf_box_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i], shape_p2[i]);
     }
@@ -564,6 +703,19 @@ void set_scene(u32 count, f32 k) {
             f32 h = shape_params[i * 4 + 1];
             ex = h;
             ey = ez = r;
+        } else if (shape_types[i] == SHAPE_CONE) {
+            // Cone along Y: params[0]=base radius, params[1]=height
+            // Base at cy, tip at cy+h
+            f32 r = shape_params[i * 4];
+            f32 h = shape_params[i * 4 + 1];
+            ex = ez = r;
+            ey = h;  // extends upward from center
+        } else if (shape_types[i] == SHAPE_CYLINDER_Y) {
+            // Cylinder along Y: params[0]=radius, params[1]=half-height
+            f32 r = shape_params[i * 4];
+            f32 h = shape_params[i * 4 + 1];
+            ex = ez = r;
+            ey = h;
         } else {
             ex = shape_params[i * 4];
             ey = shape_params[i * 4 + 1];
@@ -882,9 +1034,10 @@ void march_rays(void) {
                     wasm_f32x4_mul(nx, lx), wasm_f32x4_mul(ny, ly)), wasm_f32x4_mul(nz, lz));
                 ndotl_pl = wasm_f32x4_max(ndotl_pl, zero_simd);
 
-                // Linear attenuation: 1 / (1 + dist/radius)
+                // Quadratic attenuation: 1 / (1 + (dist/radius)²)
+                v128_t dist_norm = wasm_f32x4_div(dist, pl_radius_simd[pl]);
                 v128_t atten = wasm_f32x4_div(one,
-                    wasm_f32x4_add(one, wasm_f32x4_div(dist, pl_radius_simd[pl])));
+                    wasm_f32x4_add(one, wasm_f32x4_mul(dist_norm, dist_norm)));
 
                 // Contribution = light_color * intensity * attenuation * ndotl
                 v128_t factor = wasm_f32x4_mul(wasm_f32x4_mul(pl_intensity_simd[pl], atten), ndotl_pl);

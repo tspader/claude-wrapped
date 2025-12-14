@@ -35,11 +35,11 @@ const config: SceneConfig = {
   lighting: {
     ambient: 0.1,
     directional: {
-      direction: [1.0, 1.0, -1.0] as Vec3,
+      direction: [0.5, 0.6, -0.8] as Vec3,
       intensity: 0.9,
     },
   },
-  smoothK: 0.0,
+  smoothK: 0.3,
 };
 
 // Scene params
@@ -69,7 +69,7 @@ const groupDefs: GroupDef[] = [
 // =============================================================================
 
 const snowParams = {
-  count: 20,
+  count: 50,
   radius: 0.05,
   // World-space bounds for snowfall (smaller to stay in view)
   minX: -1.5,
@@ -111,11 +111,11 @@ let state: SceneState | null = null;
 function initState(): SceneState {
   const rng = seededRandom(sceneParams.seed);
   const pnoise1 = createNoiseGenerator(rng);
-  
+
   // Initialize snowflakes
   const snowflakes: Snowflake[] = [];
   const { count, minX, maxX, minY, maxY, minZ, maxZ, baseSpeed, speedJitter, driftStrength } = snowParams;
-  
+
   for (let i = 0; i < count; i++) {
     snowflakes.push({
       x: minX + rng() * (maxX - minX),
@@ -126,7 +126,7 @@ function initState(): SceneState {
       driftZ: (rng() - 0.5) * 2 * driftStrength,
     });
   }
-  
+
   return {
     pnoise1,
     noiseOffsetX: rng() * 1000,
@@ -195,13 +195,11 @@ function update(t: number): SceneFrame {
   const camX = Math.sin(angle) * cameraDistance;
   const camZ = -Math.cos(angle) * cameraDistance;
 
-  // Return objects + per-frame camera override via config
-  // We need to return camera position for the renderer
-  // Point light above Claude's head, orbits with camera
-  const lightOrbitRadius = 1.0;
-  const lightHeight = 1.5;
-  const lightX = Math.sin(angle + 0.5) * lightOrbitRadius;
-  const lightZ = -Math.cos(angle + 0.5) * lightOrbitRadius;
+  // Point light 25% of the way from Claude toward camera (along camera vector)
+  const lightT = 0.25;  // 0 = at Claude, 1 = at camera
+  const lightX = camX * lightT;
+  const lightZ = camZ * lightT;
+  const lightY = cameraHeight * lightT;  // interpolate height too
 
   return {
     objects,
@@ -213,14 +211,14 @@ function update(t: number): SceneFrame {
       ambient: 0.3,
       directional: {
         direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
-        intensity: 0.3,
+        intensity: 0.3,  // reduced - let point light dominate
       },
       pointLights: [
         {
-          position: [lightX + floatX, lightHeight + floatY, lightZ + floatZ] as Vec3,
+          position: [lightX + floatX, lightY + floatY, lightZ + floatZ] as Vec3,
           color: [1.0, 0.9, 0.7] as Vec3,  // warm white
-          intensity: 1.0,
-          radius: 3.0,
+          intensity: 1.0,   // increased
+          radius: 1.5,      // tighter falloff for more visible gradient
         },
       ],
     },
