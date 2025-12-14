@@ -1,5 +1,6 @@
 /**
- * T-pose scene - Claude rotating slowly with gentle sway.
+ * T-pose scene - Claude rotating slowly with gentle float.
+ * Rotation is achieved by orbiting the camera around Claude.
  */
 
 import {
@@ -8,6 +9,7 @@ import {
   type SceneFrame,
   type GroupDef,
   type ObjectDef,
+  type LightingConfig,
   type Vec3,
   BlendMode,
   registerScene,
@@ -19,18 +21,21 @@ import { seededRandom, createNoiseGenerator } from "../scene/utils";
 // Config
 // =============================================================================
 
+const cameraDistance = 3.0;
+const cameraHeight = 0.5;
+
 const config: SceneConfig = {
   camera: {
-    eye: [1.5, 0.5, -3.0] as Vec3,  // slightly above and to the side
-    at: [0.0, 0.0, 0.0] as Vec3,     // looking at origin
+    eye: [0.0, cameraHeight, -cameraDistance] as Vec3,
+    at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
-    fov: 20,
+    fov: 30,
   },
   lighting: {
-    ambient: 0.0,
+    ambient: 0.1,
     directional: {
-      direction: [0.25, 0.5, -0.75] as Vec3,
-      intensity: 1.0,
+      direction: [1.0, 1.0, -1.0] as Vec3,
+      intensity: 0.9,
     },
   },
   smoothK: 0.0,
@@ -39,9 +44,9 @@ const config: SceneConfig = {
 // Scene params
 const sceneParams = {
   seed: 123,
-  rotationSpeed: 0.3,
-  swaySpeed: 0.2,
-  swayAmount: 0.15,
+  rotationSpeed: 0.5,
+  floatSpeed: 0.3,
+  floatAmount: 0.05,
 };
 
 // =============================================================================
@@ -88,34 +93,37 @@ function update(t: number): SceneFrame {
   if (!state) throw new Error("Scene not initialized");
 
   const { pnoise1, noiseOffsetX, noiseOffsetY, noiseOffsetZ } = state;
-  const { rotationSpeed, swaySpeed, swayAmount } = sceneParams;
+  const { rotationSpeed, floatSpeed, floatAmount } = sceneParams;
 
-  // Gentle sway with perlin noise
-  const swayX = pnoise1(noiseOffsetX + t * swaySpeed, 2) * swayAmount;
-  const swayY = pnoise1(noiseOffsetY + t * swaySpeed, 2) * swayAmount * 0.5;
-  const swayZ = pnoise1(noiseOffsetZ + t * swaySpeed, 2) * swayAmount;
+  // Gentle floating with perlin noise
+  const floatX = pnoise1(noiseOffsetX + t * floatSpeed, 2) * floatAmount;
+  const floatY = pnoise1(noiseOffsetY + t * floatSpeed, 2) * floatAmount;
+  const floatZ = pnoise1(noiseOffsetZ + t * floatSpeed, 2) * floatAmount;
 
-  // Rotation around Y axis
+  // Claude at origin with slight float
+  const objects = getClaudeBoxes([floatX, floatY, floatZ], 1.0, SceneGroups.CLAUDE);
+
+  // Camera orbits around Claude (continuous rotation)
   const angle = t * rotationSpeed;
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
+  const camX = Math.sin(angle) * cameraDistance;
+  const camZ = -Math.cos(angle) * cameraDistance;
 
-  // Get base claude boxes at origin
-  const baseBoxes = getClaudeBoxes([0, 0, 0], 1.0, SceneGroups.CLAUDE);
-
-  // Apply rotation and sway to each box
-  const objects = baseBoxes.map((obj) => {
-    const [x, y, z] = obj.position;
-    // Rotate around Y axis
-    const rx = x * cos - z * sin;
-    const rz = x * sin + z * cos;
-    return {
-      ...obj,
-      position: [rx + swayX, y + swayY, rz + swayZ] as Vec3,
-    };
-  });
-
-  return { objects };
+  // Return objects + per-frame camera override via config
+  // We need to return camera position for the renderer
+return {
+  objects,
+  camera: {
+    eye: [camX, cameraHeight, camZ] as Vec3,
+    at: [floatX, floatY, floatZ] as Vec3,
+  },
+  lighting: {
+    ambient: 0.25,
+    directional: {
+      direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
+      intensity: 0.75,
+    },
+  },
+};
 }
 
 // =============================================================================

@@ -319,9 +319,15 @@ function renderFrame(
   loadScene(wasm, flatScene);
   timings.loadSceneMs = performance.now() - t0;
 
-  // Generate rays at native resolution
+  // Generate rays at native resolution (apply per-frame camera override if present)
   t0 = performance.now();
-  setupCamera(wasm, camera, nativeWidth, nativeHeight);
+  const frameCamera = new Camera({
+    eye: frame.camera?.eye ?? camera.eye,
+    at: frame.camera?.at ?? camera.at,
+    up: frame.camera?.up ?? camera.up,
+    fov: frame.camera?.fov ?? camera.fov,
+  });
+  setupCamera(wasm, frameCamera, nativeWidth, nativeHeight);
   wasm.exports.generate_rays(nativeWidth, nativeHeight);
   timings.rayGenMs = performance.now() - t0;
   timings.rayCopyMs = 0;
@@ -707,9 +713,15 @@ function renderFrameBenchmark(
   loadScene(wasm, flatScene);
   timings.loadSceneMs = performance.now() - t0;
 
-  // Generate rays in WASM
+  // Generate rays in WASM (apply per-frame camera override if present)
   t0 = performance.now();
-  setupCamera(wasm, camera, width, height);
+  const frameCamera = new Camera({
+    eye: frame.camera?.eye ?? camera.eye,
+    at: frame.camera?.at ?? camera.at,
+    up: frame.camera?.up ?? camera.up,
+    fov: frame.camera?.fov ?? camera.fov,
+  });
+  setupCamera(wasm, frameCamera, width, height);
   wasm.exports.generate_rays(width, height);
   timings.rayGenMs = performance.now() - t0;
   timings.rayCopyMs = 0;

@@ -78,9 +78,17 @@ export interface SceneConfig {
 // Scene Interface
 // =============================================================================
 
+export interface CameraOverride {
+  eye?: Vec3;
+  at?: Vec3;
+  up?: Vec3;
+  fov?: number;
+}
+
 export interface SceneFrame {
   objects: ObjectDef[];
   lighting?: LightingConfig;  // optional per-frame lighting override
+  camera?: CameraOverride;    // optional per-frame camera override
 }
 
 export interface Scene {
