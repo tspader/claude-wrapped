@@ -71,10 +71,12 @@ interface WasmExports {
   generate_rays: (width: number, height: number) => void;
   compute_background: (time: number) => void;
   march_rays: () => void;
-  // Compositing (outputs to out_char/out_fg for bulk copy to OpenTUI)
+  // Compositing (outputs to out_char/out_fg/out_bg for bulk copy to OpenTUI)
   get_out_char_ptr: () => number;
   get_out_fg_ptr: () => number;
+  get_out_bg_ptr: () => number;
   composite: (width: number, height: number) => void;
+  composite_blocks: (width: number, height: number) => void;
   // Upscaling (uses MAX_RAYS for output buffer size since terminal is the limit)
   get_upscaled_char_ptr: () => number;
   get_upscaled_fg_ptr: () => number;
@@ -122,6 +124,7 @@ interface WasmRenderer {
   // Composited output (bulk copy to OpenTUI)
   outChar: Uint32Array;
   outFg: Float32Array;
+  outBg: Float32Array;
   // Upscaled output (for scale > 1)
   upscaledChar: Uint32Array;
   upscaledFg: Float32Array;
@@ -191,6 +194,7 @@ async function loadWasm(): Promise<WasmRenderer> {
     // Composited output (bulk copy to OpenTUI)
     outChar: new Uint32Array(memory.buffer, exports.get_out_char_ptr(), maxRays),
     outFg: new Float32Array(memory.buffer, exports.get_out_fg_ptr(), maxRays * 4),
+    outBg: new Float32Array(memory.buffer, exports.get_out_bg_ptr(), maxRays * 4),
     // Upscaled output (same max size as native - terminal is the limiting factor)
     upscaledChar: new Uint32Array(memory.buffer, exports.get_upscaled_char_ptr(), maxRays),
     upscaledFg: new Float32Array(memory.buffer, exports.get_upscaled_fg_ptr(), maxRays * 4),
@@ -258,7 +262,8 @@ function renderFrame(
   outputHeight: number,
   scale: number,
   frameBuffer: OptimizedBuffer,
-  camera: Camera
+  camera: Camera,
+  useBlocks: boolean = false
 ): FrameTimings {
   const timings: FrameTimings = {
     sceneDataMs: 0,
@@ -339,15 +344,24 @@ function renderFrame(
   timings.wasmHitRate = wasm.perfMetrics[PERF.HIT_RATE]!;
   timings.wasmAabbSkipped = wasm.perfMetrics[PERF.AABB_SKIPPED]!;
 
-  // Composite in WASM (RGB floats -> ASCII + RGBA for OpenTUI)
+  // Composite in WASM (RGB floats -> ASCII/blocks + RGBA for OpenTUI)
   t0 = performance.now();
-  wasm.exports.composite(nativeWidth, nativeHeight);
+  if (useBlocks) {
+    // Block mode: renders at 2x height internally, outputs at outputHeight
+    wasm.exports.composite_blocks(nativeWidth, nativeHeight);
+  } else {
+    wasm.exports.composite(nativeWidth, nativeHeight);
+  }
   timings.compositeMs = performance.now() - t0;
 
   // Upscale if needed, then bulk copy to framebuffer
   t0 = performance.now();
   const bg: Vec3 = [wasm.bgColor[0]!, wasm.bgColor[1]!, wasm.bgColor[2]!];
-  if (scale > 1) {
+  if (useBlocks) {
+    // Block mode output is half the native height
+    const blockOutHeight = Math.floor(nativeHeight / 2);
+    copyToFrameBufferBlocks(wasm, nativeWidth, blockOutHeight, frameBuffer);
+  } else if (scale > 1) {
     wasm.exports.upscale(nativeWidth, nativeHeight, outputWidth, outputHeight, scale);
     copyToFrameBufferUpscaled(wasm, outputWidth, outputHeight, frameBuffer, bg);
   } else {
@@ -396,6 +410,34 @@ function copyToFrameBuffer(
     bgBuf[base + 2] = bgB;
     bgBuf[base + 3] = 1.0;
   }
+}
+
+/**
+ * Copy block-composited output from WASM to OpenTUI framebuffer.
+ * Block mode uses both fg and bg colors per cell.
+ */
+function copyToFrameBufferBlocks(
+  wasm: WasmRenderer,
+  width: number,
+  height: number,
+  frameBuffer: OptimizedBuffer
+): void {
+  const buffers = (frameBuffer as any).buffers;
+  if (!buffers) {
+    throw new Error("OpenTUI buffers not available");
+  }
+
+  const count = width * height;
+  const { char: charBuf, fg: fgBuf, bg: bgBuf } = buffers as {
+    char: Uint32Array;
+    fg: Float32Array;
+    bg: Float32Array;
+  };
+
+  // Bulk copy char, fg, and bg from WASM
+  charBuf.set(wasm.outChar.subarray(0, count));
+  fgBuf.set(wasm.outFg.subarray(0, count * 4));
+  bgBuf.set(wasm.outBg.subarray(0, count * 4));
 }
 
 /**
@@ -450,17 +492,19 @@ function parseArgs(): {
   height: number | null;
   scale: number;
   scene: string;
+  blocks: boolean;
 } {
   const args = process.argv.slice(2);
   const result = {
     time: 0,
     animate: false,
-    fps: 30,
+    fps: 60,
     bench: false,
     width: null as number | null,
     height: null as number | null,
     scale: 1,
     scene: "slingshot",
+    blocks: false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -497,6 +541,9 @@ function parseArgs(): {
       case "--scene":
         result.scene = args[++i] || "slingshot";
         break;
+      case "--blocks":
+        result.blocks = true;
+        break;
       case "--help":
         console.log(`Usage: bun src/main.ts [options]
 
@@ -509,6 +556,7 @@ Options:
   -h, --height <int>    Render height for benchmark (default: 64)
   -s, --scale <int>     Upscale factor (default: 1, render at 1/scale resolution)
   --scene <name>        Scene to load (default: slingshot)
+  --blocks              Use Unicode block characters instead of ASCII
   --help                Show this help`);
         process.exit(0);
     }
@@ -723,12 +771,15 @@ async function main(): Promise<void> {
     targetFps: args.fps,
   });
 
-  // Output at terminal resolution, render at native resolution (output / scale)
+  // Layout: left half = stats box, right half = raymarched scene
   const scale = args.scale;
-  const outputWidth = renderer.width;
-  const outputHeight = renderer.height;
-  const nativeWidth = Math.ceil(outputWidth / scale);
-  const nativeHeight = Math.ceil(outputHeight / scale);
+  const sceneOutputWidth = Math.floor(renderer.width / 2);
+  const sceneOutputHeight = renderer.height;
+  // For block mode: render at 2x height since blocks combine 2 rows into 1
+  const nativeWidth = Math.ceil(sceneOutputWidth / scale);
+  const nativeHeight = args.blocks
+    ? Math.ceil((sceneOutputHeight * 2) / scale)
+    : Math.ceil(sceneOutputHeight / scale);
 
   // Check if we exceed max rays (at native resolution)
   const nRays = nativeWidth * nativeHeight;
@@ -739,9 +790,9 @@ async function main(): Promise<void> {
 
   // Check if output fits (same limit as native since terminal size is the bound)
   if (scale > 1) {
-    const nOutput = outputWidth * outputHeight;
+    const nOutput = sceneOutputWidth * sceneOutputHeight;
     if (nOutput > wasm.maxRays) {
-      process.stderr.write(`Terminal too large: ${outputWidth}x${outputHeight} = ${nOutput}, max is ${wasm.maxRays}\n`);
+      process.stderr.write(`Terminal too large: ${sceneOutputWidth}x${sceneOutputHeight} = ${nOutput}, max is ${wasm.maxRays}\n`);
       process.exit(1);
     }
   }
@@ -754,23 +805,23 @@ async function main(): Promise<void> {
     fov: config.camera.fov,
   });
 
-  // Create FrameBufferRenderable at output (terminal) resolution
+  // Create FrameBufferRenderable for right half (raymarched scene)
   const canvas = new FrameBufferRenderable(renderer, {
     id: "raymarcher",
-    width: outputWidth,
-    height: outputHeight,
+    width: sceneOutputWidth,
+    height: sceneOutputHeight,
     position: "absolute",
-    left: 0,
+    left: Math.floor(renderer.width / 2),
     top: 0,
   });
 
   renderer.root.add(canvas);
 
-  // Create centered stats box
+  // Create stats box on left half with margin/padding
   const boxMargin = 2;
-  const boxWidth = Math.floor(outputWidth / 2);
-  const boxHeight = outputHeight - boxMargin * 2;
-  const boxLeft = Math.floor((outputWidth - boxWidth) / 2);
+  const boxWidth = Math.floor(renderer.width / 2) - boxMargin * 2;
+  const boxHeight = renderer.height - boxMargin * 2;
+  const boxLeft = boxMargin;
   const boxTop = boxMargin;
 
   const statsBox = new BoxRenderable(renderer, {
@@ -825,7 +876,7 @@ async function main(): Promise<void> {
     const scaleInfo = scale > 1 ? ` (${nativeWidth}x${nativeHeight} x${scale})` : "";
     statsText.content = [
       "",
-      `Resolution: ${outputWidth}x${outputHeight}${scaleInfo}`,
+      `Resolution: ${sceneOutputWidth}x${sceneOutputHeight}${scaleInfo}`,
       `Rays: ${nativeWidth * nativeHeight}`,
       "",
       "-- TS Timings --",
@@ -866,7 +917,7 @@ async function main(): Promise<void> {
       const bgRgba = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
       renderer.setBackgroundColor(bgRgba);
       canvas.frameBuffer.clear(bgRgba);
-      const timings = renderFrame(wasm, t, nativeWidth, nativeHeight, outputWidth, outputHeight, scale, canvas.frameBuffer, camera);
+      const timings = renderFrame(wasm, t, nativeWidth, nativeHeight, sceneOutputWidth, sceneOutputHeight, scale, canvas.frameBuffer, camera, args.blocks);
       t += deltaTime / 1000;
 
       updateStats(timings);
@@ -876,12 +927,12 @@ async function main(): Promise<void> {
   } else {
     // Single frame
     canvas.frameBuffer.clear(bgColor);
-    const timings = renderFrame(wasm, args.time, nativeWidth, nativeHeight, outputWidth, outputHeight, scale, canvas.frameBuffer, camera);
+    const timings = renderFrame(wasm, args.time, nativeWidth, nativeHeight, sceneOutputWidth, sceneOutputHeight, scale, canvas.frameBuffer, camera, args.blocks);
 
     const scaleInfo = scale > 1 ? ` (${nativeWidth}x${nativeHeight} x${scale})` : "";
     statsText.content = [
       "",
-      `Resolution: ${outputWidth}x${outputHeight}${scaleInfo}`,
+      `Resolution: ${sceneOutputWidth}x${sceneOutputHeight}${scaleInfo}`,
       `Rays: ${nativeWidth * nativeHeight}`,
       "",
       "-- TS Timings --",

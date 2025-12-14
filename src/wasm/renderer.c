@@ -62,8 +62,10 @@ static f32 out_b[MAX_RAYS];
 // OpenTUI-compatible output buffers (SoA layout)
 // char: u32 per cell (unicode codepoint)
 // fg: 4 x f32 per cell (RGBA normalized floats)
+// bg: 4 x f32 per cell (RGBA normalized floats) - used by block compositor
 static u32 out_char[MAX_RAYS];
 static f32 out_fg[MAX_RAYS * 4];  // r, g, b, a per cell
+static f32 out_bg[MAX_RAYS * 4];  // r, g, b, a per cell (for block mode)
 
 // Upscaled output buffers (for rendering at lower res then upscaling)
 // Same max size as native output since terminal size is the limiting factor
@@ -748,6 +750,7 @@ u32 get_max_rays(void) { return MAX_RAYS; }
 
 u32* get_out_char_ptr(void) { return out_char; }
 f32* get_out_fg_ptr(void) { return out_fg; }
+f32* get_out_bg_ptr(void) { return out_bg; }
 
 // ASCII ramp: " .:-=+*#%@" (10 chars)
 static const char ascii_ramp[10] = {' ', '.', ':', '-', '=', '+', '*', '#', '%', '@'};
@@ -800,6 +803,102 @@ void composite(u32 width, u32 height) {
                 out_fg[fg_base + 1] = BG_FILL_G;
                 out_fg[fg_base + 2] = BG_FILL_B;
                 out_fg[fg_base + 3] = 1.0f;
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Block Compositor (RGB floats -> Unicode blocks + RGBA fg/bg for OpenTUI)
+// Uses half-block characters for 2x vertical resolution per cell
+// =============================================================================
+
+// Unicode block characters
+#define BLOCK_FULL  0x2588  // █ - full block
+#define BLOCK_UPPER 0x2580  // ▀ - upper half block
+#define BLOCK_LOWER 0x2584  // ▄ - lower half block
+
+// Composite using Unicode half-blocks - each cell represents 2 vertical pixels
+// Top pixel -> fg color, Bottom pixel -> bg color, character selects which half is fg
+void composite_blocks(u32 width, u32 height) {
+    // Output has half the height (each output cell = 2 input rows)
+    u32 out_height = height / 2;
+    u32 out_count = width * out_height;
+    if (out_count > MAX_RAYS) out_count = MAX_RAYS;
+
+    for (u32 out_row = 0; out_row < out_height; out_row++) {
+        u32 top_row = out_row * 2;
+        u32 bot_row = top_row + 1;
+        if (bot_row >= height) bot_row = top_row;  // Handle odd height
+
+        for (u32 col = 0; col < width; col++) {
+            u32 out_idx = out_row * width + col;
+            if (out_idx >= MAX_RAYS) break;
+
+            u32 top_idx = top_row * width + col;
+            u32 bot_idx = bot_row * width + col;
+
+            // Get colors for top and bottom pixels
+            f32 top_r = out_r[top_idx];
+            f32 top_g = out_g[top_idx];
+            f32 top_b = out_b[top_idx];
+            f32 bot_r = out_r[bot_idx];
+            f32 bot_g = out_g[bot_idx];
+            f32 bot_b = out_b[bot_idx];
+
+            // Check if pixels are "bright" (not background)
+            f32 top_bright = (top_r + top_g + top_b) * RGB_AVG_DIVISOR;
+            f32 bot_bright = (bot_r + bot_g + bot_b) * RGB_AVG_DIVISOR;
+            i32 top_on = top_bright > BG_THRESHOLD;
+            i32 bot_on = bot_bright > BG_THRESHOLD;
+
+            u32 fg_base = out_idx * 4;
+            u32 bg_base = out_idx * 4;
+
+            if (top_on && bot_on) {
+                // Both lit: use full block with averaged color, bg doesn't matter much
+                out_char[out_idx] = BLOCK_FULL;
+                out_fg[fg_base]     = (top_r + bot_r) * 0.5f;
+                out_fg[fg_base + 1] = (top_g + bot_g) * 0.5f;
+                out_fg[fg_base + 2] = (top_b + bot_b) * 0.5f;
+                out_fg[fg_base + 3] = 1.0f;
+                out_bg[bg_base]     = (top_r + bot_r) * 0.5f;
+                out_bg[bg_base + 1] = (top_g + bot_g) * 0.5f;
+                out_bg[bg_base + 2] = (top_b + bot_b) * 0.5f;
+                out_bg[bg_base + 3] = 1.0f;
+            } else if (top_on && !bot_on) {
+                // Top lit, bottom dark: upper half block, fg=top, bg=bottom
+                out_char[out_idx] = BLOCK_UPPER;
+                out_fg[fg_base]     = top_r;
+                out_fg[fg_base + 1] = top_g;
+                out_fg[fg_base + 2] = top_b;
+                out_fg[fg_base + 3] = 1.0f;
+                out_bg[bg_base]     = bot_r;
+                out_bg[bg_base + 1] = bot_g;
+                out_bg[bg_base + 2] = bot_b;
+                out_bg[bg_base + 3] = 1.0f;
+            } else if (!top_on && bot_on) {
+                // Top dark, bottom lit: lower half block, fg=bottom, bg=top
+                out_char[out_idx] = BLOCK_LOWER;
+                out_fg[fg_base]     = bot_r;
+                out_fg[fg_base + 1] = bot_g;
+                out_fg[fg_base + 2] = bot_b;
+                out_fg[fg_base + 3] = 1.0f;
+                out_bg[bg_base]     = top_r;
+                out_bg[bg_base + 1] = top_g;
+                out_bg[bg_base + 2] = top_b;
+                out_bg[bg_base + 3] = 1.0f;
+            } else {
+                // Both dark: space with background color
+                out_char[out_idx] = ' ';
+                out_fg[fg_base]     = bg_color[0];
+                out_fg[fg_base + 1] = bg_color[1];
+                out_fg[fg_base + 2] = bg_color[2];
+                out_fg[fg_base + 3] = 1.0f;
+                out_bg[bg_base]     = bg_color[0];
+                out_bg[bg_base + 1] = bg_color[1];
+                out_bg[bg_base + 2] = bg_color[2];
+                out_bg[bg_base + 3] = 1.0f;
             }
         }
     }
