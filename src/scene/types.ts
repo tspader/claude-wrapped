@@ -105,4 +105,18 @@ export interface Scene {
   groupDefs: GroupDef[];
   init(): void;
   update(t: number): SceneFrame;
+  onMouseDown?(event: MouseEvent, width: number, height: number): void;
+  onMouseUp?(event: MouseEvent, width: number, height: number): void;
+}
+
+export interface MouseEvent {
+  type: string;
+  button: number;
+  x: number;
+  y: number;
+  modifiers: {
+    shift: boolean;
+    alt: boolean;
+    ctrl: boolean;
+  };
 }

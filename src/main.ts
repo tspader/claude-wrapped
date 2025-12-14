@@ -15,6 +15,7 @@ import type { OptimizedBuffer } from "@opentui/core";
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { StatsBox } from "./ui/StatsBox";
 import {
   compileScene,
   setActiveScene,
@@ -181,6 +182,7 @@ async function loadWasm(): Promise<WasmRenderer> {
   const wasmPath = join(__dirname, "wasm", "renderer.wasm");
   const wasmBuffer = readFileSync(wasmPath);
 
+  // @ts-ignore
   const { instance } = await WebAssembly.instantiate(wasmBuffer, {});
   const exports = instance.exports as unknown as WasmExports;
   const memory = exports.memory;
@@ -856,6 +858,7 @@ async function main(): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
     targetFps: args.fps,
+    useMouse: true,
   });
 
   // Layout: left half = stats box, right half = raymarched scene
@@ -900,47 +903,59 @@ async function main(): Promise<void> {
     position: "absolute",
     left: Math.floor(renderer.width / 2),
     top: 0,
+    onMouseDown: (event) => {
+      const scene = getActiveScene();
+      if (scene.onMouseDown) {
+        // Adjust x/y to be relative to this canvas
+        const localEvent = {
+          ...event,
+          x: event.x - Math.floor(renderer.width / 2),
+          y: event.y
+        };
+        scene.onMouseDown(localEvent, sceneOutputWidth, sceneOutputHeight);
+      }
+    },
+    onMouseUp: (event) => {
+      const scene = getActiveScene();
+      if (scene.onMouseUp) {
+        // Adjust x/y to be relative to this canvas
+        const localEvent = {
+          ...event,
+          x: event.x - Math.floor(renderer.width / 2),
+          y: event.y
+        };
+        scene.onMouseUp(localEvent, sceneOutputWidth, sceneOutputHeight);
+      }
+    },
   });
 
   renderer.root.add(canvas);
 
-  // Create stats box on left half with margin/padding
+  // Create StatsBox on left half with margin/padding
   const boxMargin = 2;
   const boxWidth = Math.floor(renderer.width / 2) - boxMargin * 2;
   const boxHeight = renderer.height - boxMargin * 2;
   const boxLeft = boxMargin;
   const boxTop = boxMargin;
 
-  const statsBox = new BoxRenderable(renderer, {
-    id: "stats-box",
-    width: boxWidth,
-    height: boxHeight,
-    position: "absolute",
-    left: boxLeft,
-    top: boxTop,
-    border: true,
-    borderStyle: "single",
-    borderColor: "#FFFFFF",
-    backgroundColor: RGBA.fromValues(0, 0, 0, 0.0),
-    padding: 1,
-  });
+  const statsBox = new StatsBox(
+    renderer,
+    boxWidth,
+    boxHeight,
+    boxLeft,
+    boxTop
+  );
 
-  const titleText = new TextRenderable(renderer, {
-    id: "title-text",
-    content: "CLAUDE WRAPPED",
-    fg: "#FFFFFF",
-  });
+  renderer.root.add(statsBox.container);
 
-  const statsText = new TextRenderable(renderer, {
-    id: "stats-text",
-    content: "",
-    fg: "#AAAAAA",
+  // Setup input handling
+  process.stdin.on('data', async (data: Buffer) => {
+    const s = data.toString();
+    // Map common keys
+    if (s === '\u001b[D' || s === 'h') await statsBox.handleInput('ArrowLeft');
+    if (s === '\u001b[C' || s === 'l') await statsBox.handleInput('ArrowRight');
+    if (s === '\r' || s === '\n') await statsBox.handleInput('Enter');
   });
-
-  statsBox.flexDirection = "column";
-  statsBox.add(titleText);
-  statsBox.add(statsText);
-  renderer.root.add(statsBox);
 
   // Frame timing tracking
   const frameTimes: number[] = [];
@@ -961,7 +976,9 @@ async function main(): Promise<void> {
     }
 
     const scaleInfo = scale > 1 ? ` (${nativeWidth}x${nativeHeight} x${scale})` : "";
-    statsText.content = [
+
+    // Only update if we are in "done" state (handled by StatsBox internally)
+    statsBox.setDebugStats([
       "",
       `Resolution: ${sceneOutputWidth}x${sceneOutputHeight}${scaleInfo}`,
       `Rays: ${nativeWidth * nativeHeight}`,
@@ -986,7 +1003,7 @@ async function main(): Promise<void> {
       `  hitRate:      ${timings.wasmHitRate.toFixed(1)}%`,
       "",
       `Worst: ${worstFrameTime.toFixed(1)}ms | Median: ${medianFrameTime.toFixed(1)}ms`,
-    ].join("\n");
+    ].join("\n"));
   }
 
   // Get initial background for clear
@@ -1004,6 +1021,10 @@ async function main(): Promise<void> {
       const bgRgba = RGBA.fromValues(bg[0], bg[1], bg[2], 1);
       renderer.setBackgroundColor(bgRgba);
       canvas.frameBuffer.clear(bgRgba);
+
+      // Update stats box animation
+      statsBox.update(deltaTime);
+
       const timings = renderFrame(wasm, t, nativeWidth, nativeHeight, sceneOutputWidth, sceneOutputHeight, scale, canvas.frameBuffer, camera, args.blocks);
       t += deltaTime / 1000;
 
@@ -1017,7 +1038,7 @@ async function main(): Promise<void> {
     const timings = renderFrame(wasm, args.time, nativeWidth, nativeHeight, sceneOutputWidth, sceneOutputHeight, scale, canvas.frameBuffer, camera, args.blocks);
 
     const scaleInfo = scale > 1 ? ` (${nativeWidth}x${nativeHeight} x${scale})` : "";
-    statsText.content = [
+    statsBox.setDebugStats([
       "",
       `Resolution: ${sceneOutputWidth}x${sceneOutputHeight}${scaleInfo}`,
       `Rays: ${nativeWidth * nativeHeight}`,
@@ -1040,7 +1061,7 @@ async function main(): Promise<void> {
       `  colorLookups: ${timings.wasmColorLookups.toFixed(0)}`,
       `  hits/misses:  ${timings.wasmHits.toFixed(0)}/${timings.wasmMisses.toFixed(0)}`,
       `  hitRate:      ${timings.wasmHitRate.toFixed(1)}%`,
-    ].join("\n");
+    ].join("\n"));
 
     await renderer.idle();
     await new Promise((resolve) => setTimeout(resolve, 100));
