@@ -10,7 +10,7 @@ import {
   type TextChunk,
 } from "@opentui/core";
 import { SLIDES } from "./slides";
-import { CLAUDE_LOGO, WRAPPED_LOGO, LOGO_WIDTH } from "./logo";
+import { CLAUDE_LOGO, WRAPPED_LOGO, LOGO_WIDTH, CLAUDE_COLOR, WRAPPED_COLOR } from "./logo";
 
 // Off-white cursor color
 const cursorStyle = fg("#CCCCCC");
@@ -130,27 +130,38 @@ export class StatsBox {
     this.startSlide(0);
   }
 
-  private buildTitle(): StyledText | string {
+  private buildTitle(): StyledText {
     const innerWidth = this.boxWidth - 4;
+    const claudeStyle = fg(CLAUDE_COLOR);
+    const wrappedStyle = fg(WRAPPED_COLOR);
     
     if (this.useLogo) {
-      // Center each line of CLAUDE, then WRAPPED
-      const lines: string[] = [];
-      for (const line of CLAUDE_LOGO) {
+      // Center each line of CLAUDE (orange), then WRAPPED (off-white)
+      const parts: TextChunk[] = [];
+      
+      for (let i = 0; i < CLAUDE_LOGO.length; i++) {
+        const line = CLAUDE_LOGO[i]!;
         const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
-        lines.push(" ".repeat(pad) + line);
+        if (i > 0) parts.push(plainChunk("\n"));
+        parts.push(plainChunk(" ".repeat(pad)));
+        parts.push(claudeStyle(line));
       }
-      lines.push(""); // blank line between
-      for (const line of WRAPPED_LOGO) {
+      
+      parts.push(plainChunk("\n\n")); // blank line between
+      
+      for (let i = 0; i < WRAPPED_LOGO.length; i++) {
+        const line = WRAPPED_LOGO[i]!;
         const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
-        lines.push(" ".repeat(pad) + line);
+        if (i > 0) parts.push(plainChunk("\n"));
+        parts.push(plainChunk(" ".repeat(pad)));
+        parts.push(wrappedStyle(line));
       }
-      return lines.join("\n");
+      
+      return concatStyledText(...parts);
     } else {
-      // Centered bold text
-      const title = "CLAUDE WRAPPED";
-      const pad = Math.max(0, Math.floor((innerWidth - title.length) / 2));
-      return t`${" ".repeat(pad)}${bold(title)}`;
+      // Centered bold text - CLAUDE orange, WRAPPED off-white
+      const pad = Math.max(0, Math.floor((innerWidth - 14) / 2)); // "CLAUDE WRAPPED" = 14 chars
+      return t`${" ".repeat(pad)}${claudeStyle("CLAUDE")} ${wrappedStyle("WRAPPED")}`;
     }
   }
 
