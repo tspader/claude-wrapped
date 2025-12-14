@@ -324,39 +324,60 @@ static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
 // Color blending (find closest shape for color)
 // =============================================================================
 
-static void get_hit_color(f32 px, f32 py, f32 pz, f32* r, f32* g, f32* b) {
-    // Find closest shape for color
-    f32 min_dist = MAX_DIST;
-    u32 closest = 0;
+// SIMD batch color lookup - finds closest shape for 4 points, returns colors
+// hit_mask: which of the 4 lanes are valid hits (from hit_arr)
+static void get_hit_colors_simd(
+    v128_t px, v128_t py, v128_t pz,
+    i32* hit_mask,
+    f32* out_cr, f32* out_cg, f32* out_cb
+) {
+    v128_t min_dist = wasm_f32x4_splat(MAX_DIST);
+    v128_t closest_r = wasm_f32x4_splat(0.0f);
+    v128_t closest_g = wasm_f32x4_splat(0.0f);
+    v128_t closest_b = wasm_f32x4_splat(0.0f);
+    v128_t hit_thresh = wasm_f32x4_splat(HIT_THRESHOLD);
+
+    // Track which lanes have found their closest shape (early out)
+    v128_t done = wasm_i32x4_splat(0);
+    // Only process lanes that are hits
+    v128_t valid = wasm_i32x4_make(hit_mask[0], hit_mask[1], hit_mask[2], hit_mask[3]);
 
     for (u32 i = 0; i < shape_count; i++) {
-        perf_metrics[PERF_COLOR_LOOKUPS] += 1.0f;  // Count shape iterations
+        perf_metrics[PERF_COLOR_LOOKUPS] += 1.0f;
 
-        u8 type = shape_types[i];
-        f32 cx = shape_positions[i * 3];
-        f32 cy = shape_positions[i * 3 + 1];
-        f32 cz = shape_positions[i * 3 + 2];
+        v128_t d = eval_shape_simd(i, px, py, pz);
 
-        f32 d;
-        if (type == SHAPE_SPHERE) {
-            f32 radius = shape_params[i * 4];
-            d = sdf_sphere_scalar(px, py, pz, cx, cy, cz, radius);
-        } else {
-            f32 bx = shape_params[i * 4];
-            f32 by = shape_params[i * 4 + 1];
-            f32 bz = shape_params[i * 4 + 2];
-            d = sdf_box_scalar(px, py, pz, cx, cy, cz, bx, by, bz);
-        }
+        // Check which lanes have new minimum
+        v128_t is_closer = wasm_f32x4_lt(d, min_dist);
+        // Only update lanes that are valid hits and not done
+        v128_t should_update = wasm_v128_and(is_closer, wasm_v128_andnot(valid, done));
 
-        if (d < min_dist) {
-            min_dist = d;
-            closest = i;
-        }
+        // Update min_dist for lanes that are closer
+        min_dist = wasm_v128_bitselect(d, min_dist, should_update);
+
+        // Update colors for lanes that are closer
+        f32 cr = shape_colors[i * 3];
+        f32 cg = shape_colors[i * 3 + 1];
+        f32 cb = shape_colors[i * 3 + 2];
+        v128_t shape_r = wasm_f32x4_splat(cr);
+        v128_t shape_g = wasm_f32x4_splat(cg);
+        v128_t shape_b = wasm_f32x4_splat(cb);
+        closest_r = wasm_v128_bitselect(shape_r, closest_r, should_update);
+        closest_g = wasm_v128_bitselect(shape_g, closest_g, should_update);
+        closest_b = wasm_v128_bitselect(shape_b, closest_b, should_update);
+
+        // Mark lanes as done if they found a very close shape
+        v128_t very_close = wasm_f32x4_lt(d, hit_thresh);
+        done = wasm_v128_or(done, wasm_v128_and(should_update, very_close));
+
+        // Early out if all valid lanes are done
+        v128_t all_done = wasm_v128_or(done, wasm_v128_not(valid));
+        if (wasm_i32x4_all_true(all_done)) break;
     }
 
-    *r = shape_colors[closest * 3];
-    *g = shape_colors[closest * 3 + 1];
-    *b = shape_colors[closest * 3 + 2];
+    wasm_v128_store(out_cr, closest_r);
+    wasm_v128_store(out_cg, closest_g);
+    wasm_v128_store(out_cb, closest_b);
 }
 
 // =============================================================================
@@ -639,11 +660,11 @@ void march_rays(void) {
             wasm_v128_store(bright_arr, brightness);
         }
 
-        // Get colors per ray (need to extract positions and look up colors)
-        f32 px_arr[4], py_arr[4], pz_arr[4];
-        wasm_v128_store(px_arr, px);
-        wasm_v128_store(py_arr, py);
-        wasm_v128_store(pz_arr, pz);
+        // Get colors for all 4 rays in batch using SIMD
+        f32 cr_arr[4], cg_arr[4], cb_arr[4];
+        if (any_hit) {
+            get_hit_colors_simd(px, py, pz, hit_arr, cr_arr, cg_arr, cb_arr);
+        }
 
         for (int i = 0; i < 4; i++) {
             u32 idx = base + i;
@@ -651,11 +672,9 @@ void march_rays(void) {
 
             if (hit_arr[i]) {
                 total_hits++;
-                f32 cr, cg, cb;
-                get_hit_color(px_arr[i], py_arr[i], pz_arr[i], &cr, &cg, &cb);
-                out_r[idx] = bright_arr[i] * cr;
-                out_g[idx] = bright_arr[i] * cg;
-                out_b[idx] = bright_arr[i] * cb;
+                out_r[idx] = bright_arr[i] * cr_arr[i];
+                out_g[idx] = bright_arr[i] * cg_arr[i];
+                out_b[idx] = bright_arr[i] * cb_arr[i];
             } else {
                 total_misses++;
                 out_r[idx] = bg_color[0];
@@ -694,43 +713,47 @@ void composite(u32 width, u32 height) {
     u32 count = width * height;
     if (count > MAX_RAYS) count = MAX_RAYS;
 
-    for (u32 i = 0; i < count; i++) {
-        u32 row = i / width;
-        u32 col = i % width;
+    u32 i = 0;
+    for (u32 row = 0; row < height; row++) {
+        u32 row_bit = (row & 1) * 2;  // Precompute row contribution to dither
 
-        f32 r = out_r[i];
-        f32 g = out_g[i];
-        f32 b = out_b[i];
+        for (u32 col = 0; col < width; col++, i++) {
+            if (i >= MAX_RAYS) break;
 
-        // Brightness with dither
-        f32 brightness = (r + g + b) * RGB_AVG_DIVISOR;
-        u32 dither_idx = (row & 1) * 2 + (col & 1);
-        brightness += bayer2x2[dither_idx];
+            f32 r = out_r[i];
+            f32 g = out_g[i];
+            f32 b = out_b[i];
 
-        // Clamp and map to ASCII
-        if (brightness < 0.0f) brightness = 0.0f;
-        if (brightness > 1.0f) brightness = 1.0f;
+            // Brightness with dither
+            f32 brightness = (r + g + b) * RGB_AVG_DIVISOR;
+            u32 dither_idx = row_bit + (col & 1);
+            brightness += bayer2x2[dither_idx];
 
-        u32 fg_base = i * 4;
+            // Clamp and map to ASCII
+            if (brightness < 0.0f) brightness = 0.0f;
+            if (brightness > 1.0f) brightness = 1.0f;
 
-        // Check if pixel has color (not background)
-        if (r > BG_THRESHOLD || g > BG_THRESHOLD || b > BG_THRESHOLD) {
-            i32 char_idx = (i32)(brightness * ASCII_RAMP_MAX_IDX);
-            if (char_idx < 0) char_idx = 0;
-            if (char_idx > 9) char_idx = 9;
+            u32 fg_base = i * 4;
 
-            out_char[i] = (u32)ascii_ramp[char_idx];
-            out_fg[fg_base]     = r;
-            out_fg[fg_base + 1] = g;
-            out_fg[fg_base + 2] = b;
-            out_fg[fg_base + 3] = 1.0f;
-        } else {
-            // Dark background: '@' with dark color
-            out_char[i] = '@';
-            out_fg[fg_base]     = BG_FILL_R;
-            out_fg[fg_base + 1] = BG_FILL_G;
-            out_fg[fg_base + 2] = BG_FILL_B;
-            out_fg[fg_base + 3] = 1.0f;
+            // Check if pixel has color (not background)
+            if (r > BG_THRESHOLD || g > BG_THRESHOLD || b > BG_THRESHOLD) {
+                i32 char_idx = (i32)(brightness * ASCII_RAMP_MAX_IDX);
+                if (char_idx < 0) char_idx = 0;
+                if (char_idx > 9) char_idx = 9;
+
+                out_char[i] = (u32)ascii_ramp[char_idx];
+                out_fg[fg_base]     = r;
+                out_fg[fg_base + 1] = g;
+                out_fg[fg_base + 2] = b;
+                out_fg[fg_base + 3] = 1.0f;
+            } else {
+                // Dark background: '@' with dark color
+                out_char[i] = '@';
+                out_fg[fg_base]     = BG_FILL_R;
+                out_fg[fg_base + 1] = BG_FILL_G;
+                out_fg[fg_base + 2] = BG_FILL_B;
+                out_fg[fg_base + 3] = 1.0f;
+            }
         }
     }
 }
@@ -751,21 +774,21 @@ void upscale(u32 native_width, u32 native_height, u32 output_width, u32 output_h
     u32 out_count = output_width * output_height;
     if (out_count > MAX_RAYS) out_count = MAX_RAYS;
 
+    u32 out_idx = 0;
     for (u32 out_row = 0; out_row < output_height; out_row++) {
-        // Map output row to native row (nearest neighbor)
+        // Hoist native_row computation - constant for entire row
         u32 native_row = out_row / scale;
         if (native_row >= native_height) native_row = native_height - 1;
+        u32 native_row_offset = native_row * native_width;
 
-        for (u32 out_col = 0; out_col < output_width; out_col++) {
-            u32 out_idx = out_row * output_width + out_col;
+        for (u32 out_col = 0; out_col < output_width; out_col++, out_idx++) {
             if (out_idx >= MAX_RAYS) break;
 
             // Map output col to native col (nearest neighbor)
             u32 native_col = out_col / scale;
             if (native_col >= native_width) native_col = native_width - 1;
 
-            u32 native_idx = native_row * native_width + native_col;
-            if (native_idx >= MAX_RAYS) native_idx = MAX_RAYS - 1;
+            u32 native_idx = native_row_offset + native_col;
 
             // Copy char
             upscaled_char[out_idx] = out_char[native_idx];
