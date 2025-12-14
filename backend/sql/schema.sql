@@ -3,7 +3,7 @@ CREATE TABLE users (
     external_id TEXT NOT NULL UNIQUE
 );
 
--- time_persona: 0=morning, 1=afternoon, 2=evening, 3=night
+-- time_persona: 0=morning, 1=afternoon, 2=evening, 3=night, 4=unknown
 CREATE TABLE entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
@@ -39,7 +39,8 @@ CREATE TABLE global_stats (
     morning_person_count INTEGER NOT NULL DEFAULT 0,
     afternoon_person_count INTEGER NOT NULL DEFAULT 0,
     evening_person_count INTEGER NOT NULL DEFAULT 0,
-    night_person_count INTEGER NOT NULL DEFAULT 0
+    night_person_count INTEGER NOT NULL DEFAULT 0,
+    unknown_person_count INTEGER NOT NULL DEFAULT 0
 );
 
 INSERT INTO global_stats (id) VALUES (1);

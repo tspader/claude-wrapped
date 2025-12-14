@@ -2,6 +2,26 @@ interface Env {
   wrapped: D1Database;
 }
 
+// Validation helpers
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+function safeNumber(v: unknown, min: number, max: number, fallback = 0): number {
+  return isFiniteNumber(v) ? clamp(v, min, max) : fallback;
+}
+
+function isValidExternalId(id: unknown): id is string {
+  return typeof id === 'string'
+    && id.length >= 1
+    && id.length <= 128
+    && /^[a-zA-Z0-9_-]+$/.test(id);
+}
+
 interface StatsCache {
   dailyActivity: Array<{
     date: string;
@@ -25,7 +45,7 @@ interface StatsCache {
   hourCounts: Record<string, number>;
 }
 
-// time_persona: 0=morning, 1=afternoon, 2=evening, 3=night
+// time_persona: 0=morning, 1=afternoon, 2=evening, 3=night, 4=unknown
 interface Entry {
   total_messages: number;
   total_tokens: number;
@@ -56,6 +76,7 @@ interface GlobalStats {
   afternoon_person_count: number;
   evening_person_count: number;
   night_person_count: number;
+  unknown_person_count: number;
 }
 
 async function recomputeGlobalStats(db: D1Database): Promise<void> {
@@ -75,14 +96,15 @@ async function recomputeGlobalStats(db: D1Database): Promise<void> {
       morning_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 0),
       afternoon_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 1),
       evening_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 2),
-      night_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 3)
+      night_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 3),
+      unknown_person_count = (SELECT COUNT(*) FROM entries WHERE time_persona = 4)
     WHERE id = 1
   `).run();
 }
 
 async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
   const row = await db.prepare(`
-    SELECT 
+    SELECT
       total_entries,
       highest_total_messages,
       highest_total_tokens,
@@ -97,7 +119,8 @@ async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
       morning_person_count,
       afternoon_person_count,
       evening_person_count,
-      night_person_count
+      night_person_count,
+      unknown_person_count
     FROM global_stats WHERE id = 1
   `).first<{
     total_entries: number;
@@ -115,6 +138,7 @@ async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
     afternoon_person_count: number;
     evening_person_count: number;
     night_person_count: number;
+    unknown_person_count: number;
   }>();
 
   if (!row) {
@@ -138,33 +162,50 @@ async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
     afternoon_person_count: row.afternoon_person_count,
     evening_person_count: row.evening_person_count,
     night_person_count: row.night_person_count,
+    unknown_person_count: row.unknown_person_count,
   };
 }
+
+// Reasonable upper bounds for sanity checks
+const MAX_MESSAGES = 10_000_000;
+const MAX_TOKENS = 100_000_000_000;
+const MAX_COST = 1_000_000;
+const MAX_COUNT = 10_000_000;
 
 function computeEntry(stats: StatsCache): Entry {
   // Total tokens and cost from all models
   let total_tokens = 0;
   let total_cost = 0;
   for (const model of Object.values(stats.modelUsage ?? {})) {
-    total_tokens += (model.inputTokens ?? 0) + (model.outputTokens ?? 0);
-    total_cost += model.costUSD ?? 0;
+    const input = safeNumber(model.inputTokens, 0, MAX_TOKENS);
+    const output = safeNumber(model.outputTokens, 0, MAX_TOKENS);
+    total_tokens += input + output;
+    total_cost += safeNumber(model.costUSD, 0, MAX_COST);
   }
+  total_tokens = Math.min(total_tokens, MAX_TOKENS);
+  total_cost = Math.min(total_cost, MAX_COST);
 
   // Time of day counts (morning: 5-11, afternoon: 12-16, evening: 17-20, night: 21-4)
   let morning_count = 0, afternoon_count = 0, evening_count = 0, night_count = 0;
   for (const [hour, count] of Object.entries(stats.hourCounts ?? {})) {
     const h = parseInt(hour);
-    if (h >= 5 && h <= 11) morning_count += count;
-    else if (h >= 12 && h <= 16) afternoon_count += count;
-    else if (h >= 17 && h <= 20) evening_count += count;
-    else night_count += count; // 21-23, 0-4
+    if (!Number.isFinite(h) || h < 0 || h > 23) continue;
+    const safeCount = safeNumber(count, 0, MAX_COUNT);
+    if (h >= 5 && h <= 11) morning_count += safeCount;
+    else if (h >= 12 && h <= 16) afternoon_count += safeCount;
+    else if (h >= 17 && h <= 20) evening_count += safeCount;
+    else night_count += safeCount; // 21-23, 0-4
   }
 
   // Build date->tokens lookup from dailyModelTokens
   const tokensByDate = new Map<string, number>();
   for (const day of stats.dailyModelTokens ?? []) {
-    const dayTotal = Object.values(day.tokensByModel ?? {}).reduce((a, b) => a + b, 0);
-    tokensByDate.set(day.date, dayTotal);
+    if (!day || typeof day.date !== 'string') continue;
+    let dayTotal = 0;
+    for (const tokens of Object.values(day.tokensByModel ?? {})) {
+      dayTotal += safeNumber(tokens, 0, MAX_TOKENS);
+    }
+    tokensByDate.set(day.date, Math.min(dayTotal, MAX_TOKENS));
   }
 
   // Most active day
@@ -172,19 +213,24 @@ function computeEntry(stats: StatsCache): Entry {
   let most_active_day_messages = 0;
   let most_active_day_tokens = 0;
   for (const day of stats.dailyActivity ?? []) {
-    if (day.messageCount > most_active_day_messages) {
-      most_active_day = new Date(day.date).getTime();
-      most_active_day_messages = day.messageCount;
+    if (!day || typeof day.date !== 'string') continue;
+    const msgCount = safeNumber(day.messageCount, 0, MAX_MESSAGES);
+    if (msgCount > most_active_day_messages) {
+      const timestamp = new Date(day.date).getTime();
+      if (!Number.isFinite(timestamp)) continue; // skip invalid dates
+      most_active_day = timestamp;
+      most_active_day_messages = msgCount;
       most_active_day_tokens = tokensByDate.get(day.date) ?? 0;
     }
   }
 
-  // Determine time persona (0=morning, 1=afternoon, 2=evening, 3=night)
+  // Determine time persona (0=morning, 1=afternoon, 2=evening, 3=night, 4=unknown)
   const counts = [morning_count, afternoon_count, evening_count, night_count];
-  const time_persona = counts.indexOf(Math.max(...counts));
+  const maxCount = Math.max(...counts);
+  const time_persona = maxCount === 0 ? 4 : counts.indexOf(maxCount);
 
   return {
-    total_messages: stats.totalMessages ?? 0,
+    total_messages: safeNumber(stats.totalMessages, 0, MAX_MESSAGES),
     total_tokens,
     total_cost,
     morning_count,
@@ -205,12 +251,16 @@ export default {
     // POST /stats - submit stats and get/create user entry
     if (request.method === "POST" && url.pathname === "/stats") {
       const { external_id, stats } = await request.json() as {
-        external_id: string;
+        external_id: unknown;
         stats: StatsCache;
       };
 
-      if (!external_id || !stats) {
-        return Response.json({ error: "missing external_id or stats" }, { status: 400 });
+      if (!isValidExternalId(external_id)) {
+        return Response.json({ error: "invalid external_id" }, { status: 400 });
+      }
+
+      if (!stats || typeof stats !== 'object') {
+        return Response.json({ error: "missing or invalid stats" }, { status: 400 });
       }
 
       // Upsert user
@@ -238,7 +288,7 @@ export default {
       const entry = computeEntry(stats);
 
       await env.wrapped.prepare(`
-        INSERT INTO entries (user_id, total_messages, total_tokens, total_cost, 
+        INSERT INTO entries (user_id, total_messages, total_tokens, total_cost,
           morning_count, afternoon_count, evening_count, night_count, time_persona,
           most_active_day, most_active_day_tokens, most_active_day_messages)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -263,6 +313,10 @@ export default {
     // GET /stats/:external_id - get user entry + global stats
     if (request.method === "GET" && url.pathname.startsWith("/stats/")) {
       const external_id = url.pathname.slice("/stats/".length);
+
+      if (!isValidExternalId(external_id)) {
+        return Response.json({ error: "invalid external_id" }, { status: 400 });
+      }
 
       const entry = await env.wrapped.prepare(`
         SELECT e.* FROM entries e
