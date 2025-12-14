@@ -1,5 +1,5 @@
 /**
- * Claude logo model - 7 boxes (body, 2 arms, 4 legs).
+ * Claude logo model - 6 boxes (body, 1 arm bar, 4 legs).
  */
 
 import { ShapeType, type Vec3, type ObjectDef } from "../types";
@@ -7,7 +7,7 @@ import { ShapeType, type Vec3, type ObjectDef } from "../types";
 export const CLAUDE_COLOR: Vec3 = [0.85, 0.45, 0.35];
 
 /**
- * Returns Claude logo as 7 box ObjectDefs (body, 2 arms, 4 legs).
+ * Returns Claude logo as 6 box ObjectDefs (body, 1 arm bar, 4 legs).
  * Position is the center of the model.
  */
 export function getClaudeBoxes(
@@ -22,12 +22,12 @@ export function getClaudeBoxes(
   const bodyH = 0.28 * scale;
   const bodyD = 0.25 * scale;
 
-  // Arms: short stubby protrusions
-  const armW = 0.2 * scale;
-  const armH = 0.15 * scale;
-  const armD = 0.18 * scale;
-  const armY = 0.0; // centered vertically on body
-  const armX = bodyW / 2 + armW / 2 - 0.03 * scale;
+  // Arms: one long box that pierces the body
+  const armW = 1.1 * scale; // total arm span
+  const armH = 0.1 * scale;
+  const armD = 0.1 * scale;
+  // const armH = 0.15 * scale;
+  // const armD = 0.18 * scale;
 
   // Legs: positioned at outer edges of body
   const legW = 0.07 * scale;
@@ -44,16 +44,10 @@ export function getClaudeBoxes(
       position: [px, py, pz],
       group,
     },
-    // Left arm
+    // Arms (single box piercing body)
     {
       shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
-      position: [px - armX, py + armY, pz],
-      group,
-    },
-    // Right arm
-    {
-      shape: { type: ShapeType.BOX, params: [armW, armH, armD], color: CLAUDE_COLOR },
-      position: [px + armX, py + armY, pz],
+      position: [px, py, pz],
       group,
     },
     // Left-left leg

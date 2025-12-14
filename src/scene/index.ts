@@ -4,7 +4,7 @@
 
 export * from "./types";
 export { compileScene } from "./utils";
-export { getClaudeBoxes, CLAUDE_COLOR } from "./models/claude";
+export { getClaudeBoxes } from "./models/claude";
 
 import type { Scene } from "./types";
 
@@ -17,18 +17,11 @@ export function registerScene(scene: Scene): void {
   scenes.set(scene.name, scene);
 }
 
-export function getScene(name: string): Scene | undefined {
-  return scenes.get(name);
-}
-
-export function listScenes(): string[] {
-  return Array.from(scenes.keys());
-}
-
 export function setActiveScene(name: string): Scene {
   const scene = scenes.get(name);
   if (!scene) {
-    throw new Error(`Scene not found: ${name}. Available: ${listScenes().join(", ")}`);
+    const available = Array.from(scenes.keys()).join(", ");
+    throw new Error(`Scene not found: ${name}. Available: ${available}`);
   }
   activeScene = scene;
   activeScene.init();

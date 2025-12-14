@@ -27,10 +27,10 @@ typedef float f32;
 // Performance metrics
 #define PERF_METRICS_SIZE 16
 
-// Lighting
-#define LIGHT_DIR_COMPONENT 0.577f  // 1/sqrt(3), normalized (1,1,-1)
-#define AMBIENT_WEIGHT 0.1f
-#define DIFFUSE_WEIGHT 0.9f
+// Lighting (configurable via set_lighting)
+static f32 light_dir[3] = {0.577f, 0.577f, -0.577f};  // normalized (1,1,-1)
+static f32 light_intensity = 1.0f;
+static f32 ambient_weight = 0.1f;
 
 // Compositing
 #define RGB_AVG_DIVISOR 0.333333f
@@ -324,9 +324,9 @@ static v128_t eval_shape_simd(u32 i, v128_t px, v128_t py, v128_t pz) {
 // Used in scene_sdf_simd
 static v128_t max_dist_simd;
 // Used in lighting calculation
-static v128_t light_x;
-static v128_t light_y;
-static v128_t light_z;
+static v128_t light_x_simd;
+static v128_t light_y_simd;
+static v128_t light_z_simd;
 static v128_t zero_simd;
 static v128_t ambient_simd;
 static v128_t diffuse_simd;
@@ -334,12 +334,28 @@ static v128_t diffuse_simd;
 // Initialize SIMD constants - call once at startup
 void init_simd_constants(void) {
     max_dist_simd = wasm_f32x4_splat(MAX_DIST);
-    light_x = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
-    light_y = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
-    light_z = wasm_f32x4_splat(-LIGHT_DIR_COMPONENT);
     zero_simd = wasm_f32x4_splat(0.0f);
-    ambient_simd = wasm_f32x4_splat(AMBIENT_WEIGHT);
-    diffuse_simd = wasm_f32x4_splat(DIFFUSE_WEIGHT);
+}
+
+// Set lighting parameters (call per frame if animating)
+void set_lighting(f32 ambient, f32 dir_x, f32 dir_y, f32 dir_z, f32 intensity) {
+    ambient_weight = ambient;
+    light_intensity = intensity;
+    
+    // Normalize direction
+    f32 len = sqrtf_approx(dir_x*dir_x + dir_y*dir_y + dir_z*dir_z);
+    if (len > 0.0f) {
+        light_dir[0] = dir_x / len;
+        light_dir[1] = dir_y / len;
+        light_dir[2] = dir_z / len;
+    }
+    
+    // Update SIMD vectors
+    light_x_simd = wasm_f32x4_splat(light_dir[0]);
+    light_y_simd = wasm_f32x4_splat(light_dir[1]);
+    light_z_simd = wasm_f32x4_splat(light_dir[2]);
+    ambient_simd = wasm_f32x4_splat(ambient_weight);
+    diffuse_simd = wasm_f32x4_splat(intensity);
 }
 
 static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
@@ -737,9 +753,9 @@ void march_rays(void) {
 
             // N dot L (using precomputed light direction constants)
             v128_t ndotl = wasm_f32x4_add(wasm_f32x4_add(
-                wasm_f32x4_mul(nx, light_x),
-                wasm_f32x4_mul(ny, light_y)),
-                wasm_f32x4_mul(nz, light_z));
+                wasm_f32x4_mul(nx, light_x_simd),
+                wasm_f32x4_mul(ny, light_y_simd)),
+                wasm_f32x4_mul(nz, light_z_simd));
             ndotl = wasm_f32x4_max(ndotl, zero_simd);
 
             // Ambient + diffuse (using precomputed constants)

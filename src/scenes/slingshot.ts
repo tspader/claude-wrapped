@@ -5,6 +5,7 @@
 import {
   type Scene,
   type SceneConfig,
+  type SceneFrame,
   type GroupDef,
   type ObjectDef,
   type Vec3,
@@ -20,47 +21,25 @@ import { seededRandom, createNoiseGenerator, easeInOutQuad, easeOutQuad } from "
 // =============================================================================
 
 const config: SceneConfig = {
-  rayMarcher: {
-    maxSteps: 32,
-    maxDist: 100.0,
-    hitThreshold: 0.01,
-    normalEps: 0.001,
-  },
   camera: {
     eye: [0.0, 2.0, -8.0] as Vec3,
     at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
     fov: 60,
   },
-  render: {
-    width: process.stdout.columns,
-    height: process.stdout.rows,
-    output: "ascii",
-    background: [0.0, 0.0, 0.0] as Vec3,
-  },
   lighting: {
     ambient: 0.1,
     directional: {
       direction: [1.0, 1.0, -1.0] as Vec3,
-      color: [1.0, 1.0, 1.0] as Vec3,
-      intensity: 1.0,
+      intensity: 0.9,
     },
-    pointLights: [
-      {
-        position: [3, 3, -3] as Vec3,
-        color: [1, 0.8, 0.6] as Vec3,
-        intensity: 1.0,
-        radius: 8.0,
-      },
-    ],
   },
-  smoothK: 0.0,
+  smoothK: 2.0,
 };
 
 // Scene-specific config
 const sceneParams = {
   seed: 42,
-  colorBlendK: 0.5,
 
   beams: {
     paddingY: 0.0,
@@ -223,7 +202,7 @@ function getClaudePosition(t: number): Vec3 {
 // Scene Implementation
 // =============================================================================
 
-function update(t: number): ObjectDef[] {
+function update(t: number): SceneFrame {
   if (!state) {
     throw new Error("Scene not initialized");
   }
@@ -280,14 +259,14 @@ function update(t: number): ObjectDef[] {
   const claudePos: Vec3 = [cx + cDx, cy + cDy, cz + cDz];
   objects.push(...getClaudeBoxes(claudePos, 1.0, SceneGroups.CLAUDE));
 
-  return objects;
+  return { objects };
 }
 
 // =============================================================================
 // Export
 // =============================================================================
 
-export const slingshotScene: Scene = {
+const slingshotScene: Scene = {
   name: "slingshot",
   config,
   groupDefs,

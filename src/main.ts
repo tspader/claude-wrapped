@@ -20,7 +20,7 @@ import {
   setActiveScene,
   getActiveScene,
   type FlatScene,
-  type Vec3 as SceneVec3,
+  type LightingConfig,
 } from "./scene";
 
 // Register all scenes (side effect: adds to registry)
@@ -70,6 +70,7 @@ interface WasmExports {
   ) => void;
   generate_rays: (width: number, height: number) => void;
   compute_background: (time: number) => void;
+  set_lighting: (ambient: number, dirX: number, dirY: number, dirZ: number, intensity: number) => void;
   march_rays: () => void;
   // Compositing (outputs to out_char/out_fg/out_bg for bulk copy to OpenTUI)
   get_out_char_ptr: () => number;
@@ -307,11 +308,11 @@ function renderFrame(
   // Compile scene at time t and load to WASM
   const scene = getActiveScene();
   let t0 = performance.now();
-  const objects = scene.update(t);
+  const frame = scene.update(t);
   timings.sceneDataMs = performance.now() - t0;
 
   t0 = performance.now();
-  const flatScene = compileScene(objects, scene.groupDefs, scene.config.smoothK);
+  const flatScene = compileScene(frame.objects, scene.groupDefs, scene.config.smoothK);
   timings.compileSceneMs = performance.now() - t0;
 
   t0 = performance.now();
@@ -327,6 +328,11 @@ function renderFrame(
 
   // Compute background
   wasm.exports.compute_background(t);
+
+  // Set lighting (use per-frame override or scene default)
+  const lighting = frame.lighting ?? scene.config.lighting;
+  const [dx, dy, dz] = lighting.directional.direction;
+  wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
 
   // Do the raymarching in WASM
   t0 = performance.now();
@@ -690,11 +696,11 @@ function renderFrameBenchmark(
   // Compile scene at time t and load to WASM
   const scene = getActiveScene();
   let t0 = performance.now();
-  const objects = scene.update(t);
+  const frame = scene.update(t);
   timings.sceneDataMs = performance.now() - t0;
 
   t0 = performance.now();
-  const flatScene = compileScene(objects, scene.groupDefs, scene.config.smoothK);
+  const flatScene = compileScene(frame.objects, scene.groupDefs, scene.config.smoothK);
   timings.compileSceneMs = performance.now() - t0;
 
   t0 = performance.now();
@@ -710,6 +716,11 @@ function renderFrameBenchmark(
 
   // Compute background
   wasm.exports.compute_background(t);
+
+  // Set lighting
+  const lighting = frame.lighting ?? scene.config.lighting;
+  const [dx, dy, dz] = lighting.directional.direction;
+  wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
 
   // Do the raymarching in WASM
   t0 = performance.now();

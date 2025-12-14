@@ -55,39 +55,22 @@ export interface FlatScene {
 // Config Types
 // =============================================================================
 
-export interface SceneConfig {
-  rayMarcher: {
-    maxSteps: number;
-    maxDist: number;
-    hitThreshold: number;
-    normalEps: number;
+export interface LightingConfig {
+  ambient: number;
+  directional: {
+    direction: Vec3;
+    intensity: number;
   };
+}
+
+export interface SceneConfig {
   camera: {
     eye: Vec3;
     at: Vec3;
     up: Vec3;
     fov: number;
   };
-  render: {
-    width: number;
-    height: number;
-    output: "ascii" | "unicode" | "truecolor";
-    background: Vec3;
-  };
-  lighting: {
-    ambient: number;
-    directional: {
-      direction: Vec3;
-      color: Vec3;
-      intensity: number;
-    };
-    pointLights: Array<{
-      position: Vec3;
-      color: Vec3;
-      intensity: number;
-      radius: number;
-    }>;
-  };
+  lighting: LightingConfig;
   smoothK: number;
 }
 
@@ -95,10 +78,15 @@ export interface SceneConfig {
 // Scene Interface
 // =============================================================================
 
+export interface SceneFrame {
+  objects: ObjectDef[];
+  lighting?: LightingConfig;  // optional per-frame lighting override
+}
+
 export interface Scene {
   name: string;
   config: SceneConfig;
   groupDefs: GroupDef[];
   init(): void;
-  update(t: number): ObjectDef[];
+  update(t: number): SceneFrame;
 }

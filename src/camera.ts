@@ -49,39 +49,4 @@ export class Camera {
     this.up = cfg.up ?? [0, 1, 0];
     this.fov = cfg.fov ?? 60;
   }
-
-  generateRays(
-    width: number,
-    height: number
-  ): { origins: Vec3[]; directions: Vec3[] } {
-    const forward = normalize(sub(this.at, this.eye));
-    const right = normalize(cross(forward, this.up));
-    const up = cross(right, forward);
-
-    const aspect = width / height;
-    const fovRad = (this.fov * Math.PI) / 180;
-    const halfHeight = Math.tan(fovRad / 2);
-    const halfWidth = halfHeight * aspect;
-
-    const origins: Vec3[] = [];
-    const directions: Vec3[] = [];
-
-    for (let row = 0; row < height; row++) {
-      const v = 1 - (2 * row) / (height - 1); // +1 top, -1 bottom
-      for (let col = 0; col < width; col++) {
-        const u = (2 * col) / (width - 1) - 1; // -1 left, +1 right
-
-        const dir: Vec3 = [
-          forward[0] + u * halfWidth * right[0] + v * halfHeight * up[0],
-          forward[1] + u * halfWidth * right[1] + v * halfHeight * up[1],
-          forward[2] + u * halfWidth * right[2] + v * halfHeight * up[2],
-        ];
-
-        origins.push([...this.eye]);
-        directions.push(normalize(dir));
-      }
-    }
-
-    return { origins, directions };
-  }
 }
