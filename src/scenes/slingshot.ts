@@ -20,9 +20,12 @@ import { seededRandom, createNoiseGenerator, easeInOutQuad, easeOutQuad } from "
 // Config
 // =============================================================================
 
+const cameraDistance = 8.0;
+const cameraHeight = 2.0;
+
 const config: SceneConfig = {
   camera: {
-    eye: [0.0, 2.0, -8.0] as Vec3,
+    eye: [0.0, cameraHeight, -cameraDistance] as Vec3,
     at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
     fov: 60,
@@ -30,11 +33,11 @@ const config: SceneConfig = {
   lighting: {
     ambient: 0.1,
     directional: {
-      direction: [1.0, 1.0, -1.0] as Vec3,
+      direction: [0.0, cameraHeight, -cameraDistance] as Vec3,
       intensity: 0.9,
     },
   },
-  smoothK: 2.0,
+  smoothK: 0.0,
 };
 
 // Scene-specific config
@@ -259,7 +262,43 @@ function update(t: number): SceneFrame {
   const claudePos: Vec3 = [cx + cDx, cy + cDy, cz + cDz];
   objects.push(...getClaudeBoxes(claudePos, 1.0, SceneGroups.CLAUDE));
 
-  return { objects };
+  // Point lights inside the cylinder beams (x=0, at beam Y positions)
+  const visibleHalfHeight = cameraDistance * Math.tan((60 / 2) * Math.PI / 180);
+  const beamY = visibleHalfHeight - sceneParams.beams.paddingY - sceneParams.beams.cylinderRadius;
+
+  return {
+    objects,
+    lighting: {
+      ambient: 0.15,
+      directional: {
+        direction: [0, cameraHeight, -cameraDistance] as Vec3,  // light from camera
+        intensity: 0.6,
+      },
+      pointLights: [
+        // Top beam light (inside cylinders)
+        {
+          position: [0, beamY, 0] as Vec3,
+          color: [0.4, 0.8, 0.6] as Vec3,  // greenish, matches blob color
+          intensity: 1.2,
+          radius: 4.0,
+        },
+        // Bottom beam light (inside cylinders)
+        {
+          position: [0, -beamY, 0] as Vec3,
+          color: [0.4, 0.8, 0.6] as Vec3,
+          intensity: 1.2,
+          radius: 4.0,
+        },
+        // Light following Claude
+        {
+          position: [claudePos[0], claudePos[1] + 0.5, claudePos[2] - 1.0] as Vec3,
+          color: [1.0, 0.95, 0.8] as Vec3,  // warm white
+          intensity: 1.0,
+          radius: 3.0,
+        },
+      ],
+    },
+  };
 }
 
 // =============================================================================
