@@ -91,6 +91,21 @@ static f32 scene_aabb_max[3];
 static u8 group_blend_mode[MAX_GROUPS];      // 0 = hard union (min), 1 = smooth union
 static u32 group_count = 0;
 
+// Precomputed SIMD shape data (splatted for each shape)
+// Avoids repeated wasm_f32x4_splat calls in the hot SDF loop
+static v128_t shape_cx[MAX_SHAPES];  // center x splatted
+static v128_t shape_cy[MAX_SHAPES];  // center y splatted
+static v128_t shape_cz[MAX_SHAPES];  // center z splatted
+static v128_t shape_p0[MAX_SHAPES];  // param 0 (radius or box x)
+static v128_t shape_p1[MAX_SHAPES];  // param 1 (box y)
+static v128_t shape_p2[MAX_SHAPES];  // param 2 (box z)
+static v128_t shape_r[MAX_SHAPES];   // color r splatted
+static v128_t shape_g[MAX_SHAPES];   // color g splatted
+static v128_t shape_b[MAX_SHAPES];   // color b splatted
+
+// Precomputed k splat for smooth union
+static v128_t smooth_k_simd;
+
 // Current ray count
 static u32 ray_count = 0;
 
@@ -130,11 +145,8 @@ void reset_perf_metrics(void) {
 
 static f32 sqrtf_approx(f32 x) {
     if (x <= 0.0f) return 0.0f;
-    f32 guess = x * 0.5f;
-    for (int i = 0; i < SQRT_ITERATIONS; i++) {
-        guess = 0.5f * (guess + x / guess);
-    }
-    return guess;
+    // Use WASM SIMD sqrt which maps to hardware instruction
+    return wasm_f32x4_extract_lane(wasm_f32x4_sqrt(wasm_f32x4_splat(x)), 0);
 }
 
 static f32 sinf_approx(f32 x) {
@@ -255,29 +267,45 @@ static v128_t sdf_smooth_union_simd(v128_t d1, v128_t d2, v128_t k) {
 // Dynamic Scene SDF (SIMD - 4 points at once)
 // =============================================================================
 
-// Evaluate single shape SDF (SIMD)
+// Evaluate single shape SDF (SIMD) - uses precomputed splatted data
 static v128_t eval_shape_simd(u32 i, v128_t px, v128_t py, v128_t pz) {
-    u8 type = shape_types[i];
-    v128_t cx = wasm_f32x4_splat(shape_positions[i * 3]);
-    v128_t cy = wasm_f32x4_splat(shape_positions[i * 3 + 1]);
-    v128_t cz = wasm_f32x4_splat(shape_positions[i * 3 + 2]);
+    v128_t cx = shape_cx[i];
+    v128_t cy = shape_cy[i];
+    v128_t cz = shape_cz[i];
 
-    if (type == SHAPE_SPHERE) {
-        v128_t r = wasm_f32x4_splat(shape_params[i * 4]);
-        return sdf_sphere_simd(px, py, pz, cx, cy, cz, r);
+    if (shape_types[i] == SHAPE_SPHERE) {
+        return sdf_sphere_simd(px, py, pz, cx, cy, cz, shape_p0[i]);
     } else {
-        v128_t bx = wasm_f32x4_splat(shape_params[i * 4]);
-        v128_t by = wasm_f32x4_splat(shape_params[i * 4 + 1]);
-        v128_t bz = wasm_f32x4_splat(shape_params[i * 4 + 2]);
-        return sdf_box_simd(px, py, pz, cx, cy, cz, bx, by, bz);
+        return sdf_box_simd(px, py, pz, cx, cy, cz, shape_p0[i], shape_p1[i], shape_p2[i]);
     }
 }
 
-static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
-    if (shape_count == 0) return wasm_f32x4_splat(MAX_DIST);
+// Static SIMD constants - initialized via wasm_f32x4_const
+#define MAKE_F32X4(v) wasm_f32x4_const(v, v, v, v)
 
-    v128_t k = wasm_f32x4_splat(smooth_k);
-    v128_t max_dist = wasm_f32x4_splat(MAX_DIST);
+// Used in scene_sdf_simd
+static v128_t max_dist_simd;
+// Used in lighting calculation
+static v128_t light_x;
+static v128_t light_y;
+static v128_t light_z;
+static v128_t zero_simd;
+static v128_t ambient_simd;
+static v128_t diffuse_simd;
+
+// Initialize SIMD constants - call once at startup
+void init_simd_constants(void) {
+    max_dist_simd = wasm_f32x4_splat(MAX_DIST);
+    light_x = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
+    light_y = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
+    light_z = wasm_f32x4_splat(-LIGHT_DIR_COMPONENT);
+    zero_simd = wasm_f32x4_splat(0.0f);
+    ambient_simd = wasm_f32x4_splat(AMBIENT_WEIGHT);
+    diffuse_simd = wasm_f32x4_splat(DIFFUSE_WEIGHT);
+}
+
+static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
+    if (shape_count == 0) return max_dist_simd;
 
     // Hierarchical evaluation: first evaluate each group, then combine groups
     v128_t group_dists[MAX_GROUPS];
@@ -298,13 +326,13 @@ static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
             if (group_blend_mode[g] == 0) {
                 group_dists[g] = wasm_f32x4_min(group_dists[g], d);
             } else {
-                group_dists[g] = sdf_smooth_union_simd(group_dists[g], d, k);
+                group_dists[g] = sdf_smooth_union_simd(group_dists[g], d, smooth_k_simd);
             }
         }
     }
 
     // Pass 2: Combine all groups with smooth union
-    v128_t result = max_dist;
+    v128_t result = max_dist_simd;
     u8 first = 1;
     for (u32 g = 0; g < group_count; g++) {
         if (group_initialized[g]) {
@@ -312,7 +340,7 @@ static v128_t scene_sdf_simd(v128_t px, v128_t py, v128_t pz) {
                 result = group_dists[g];
                 first = 0;
             } else {
-                result = sdf_smooth_union_simd(result, group_dists[g], k);
+                result = sdf_smooth_union_simd(result, group_dists[g], smooth_k_simd);
             }
         }
     }
@@ -355,16 +383,10 @@ static void get_hit_colors_simd(
         // Update min_dist for lanes that are closer
         min_dist = wasm_v128_bitselect(d, min_dist, should_update);
 
-        // Update colors for lanes that are closer
-        f32 cr = shape_colors[i * 3];
-        f32 cg = shape_colors[i * 3 + 1];
-        f32 cb = shape_colors[i * 3 + 2];
-        v128_t shape_r = wasm_f32x4_splat(cr);
-        v128_t shape_g = wasm_f32x4_splat(cg);
-        v128_t shape_b = wasm_f32x4_splat(cb);
-        closest_r = wasm_v128_bitselect(shape_r, closest_r, should_update);
-        closest_g = wasm_v128_bitselect(shape_g, closest_g, should_update);
-        closest_b = wasm_v128_bitselect(shape_b, closest_b, should_update);
+        // Update colors for lanes that are closer (use precomputed splatted colors)
+        closest_r = wasm_v128_bitselect(shape_r[i], closest_r, should_update);
+        closest_g = wasm_v128_bitselect(shape_g[i], closest_g, should_update);
+        closest_b = wasm_v128_bitselect(shape_b[i], closest_b, should_update);
 
         // Mark lanes as done if they found a very close shape
         v128_t very_close = wasm_f32x4_lt(d, hit_thresh);
@@ -407,9 +429,19 @@ void set_ray_count(u32 count) {
     ray_count = count < MAX_RAYS ? count : MAX_RAYS;
 }
 
+// Flag to ensure SIMD constants are initialized once
+static u8 simd_constants_initialized = 0;
+
 void set_scene(u32 count, f32 k) {
+    // Initialize SIMD constants on first call
+    if (!simd_constants_initialized) {
+        init_simd_constants();
+        simd_constants_initialized = 1;
+    }
+
     shape_count = count < MAX_SHAPES ? count : MAX_SHAPES;
     smooth_k = k;
+    smooth_k_simd = wasm_f32x4_splat(k);  // Precompute splatted k
 
     // Compute scene AABB from all shapes
     if (shape_count == 0) {
@@ -426,6 +458,17 @@ void set_scene(u32 count, f32 k) {
         f32 cx = shape_positions[i * 3];
         f32 cy = shape_positions[i * 3 + 1];
         f32 cz = shape_positions[i * 3 + 2];
+
+        // Precompute splatted SIMD data for the hot SDF loop
+        shape_cx[i] = wasm_f32x4_splat(cx);
+        shape_cy[i] = wasm_f32x4_splat(cy);
+        shape_cz[i] = wasm_f32x4_splat(cz);
+        shape_p0[i] = wasm_f32x4_splat(shape_params[i * 4]);
+        shape_p1[i] = wasm_f32x4_splat(shape_params[i * 4 + 1]);
+        shape_p2[i] = wasm_f32x4_splat(shape_params[i * 4 + 2]);
+        shape_r[i] = wasm_f32x4_splat(shape_colors[i * 3]);
+        shape_g[i] = wasm_f32x4_splat(shape_colors[i * 3 + 1]);
+        shape_b[i] = wasm_f32x4_splat(shape_colors[i * 3 + 2]);
 
         f32 ex, ey, ez;  // extent from center
         if (shape_types[i] == SHAPE_SPHERE) {
@@ -574,6 +617,9 @@ void march_rays(void) {
         v128_t max_dist = wasm_f32x4_splat(MAX_DIST);
         v128_t hit_thresh = wasm_f32x4_splat(HIT_THRESHOLD);
 
+        // Track accumulated hits across all steps
+        v128_t accumulated_hit = wasm_i32x4_splat(0);
+
         u32 steps_this_batch = 0;
         for (int step = 0; step < MAX_STEPS; step++) {
             v128_t dist = scene_sdf_simd(px, py, pz);
@@ -581,6 +627,9 @@ void march_rays(void) {
 
             v128_t hit = wasm_f32x4_lt(dist, hit_thresh);
             v128_t miss = wasm_f32x4_gt(total_dist, max_dist);
+
+            // Accumulate hits as they happen
+            accumulated_hit = wasm_v128_or(accumulated_hit, hit);
 
             active = wasm_v128_andnot(active, wasm_v128_or(hit, miss));
 
@@ -596,10 +645,8 @@ void march_rays(void) {
         total_steps_all += steps_this_batch;
         perf_metrics[PERF_TOTAL_SDF_CALLS] += (f32)steps_this_batch;
 
-        // Final hit test
-        v128_t final_dist = scene_sdf_simd(px, py, pz);
-        v128_t hit = wasm_f32x4_lt(final_dist, hit_thresh);
-        perf_metrics[PERF_TOTAL_SDF_CALLS] += 1.0f;
+        // Use accumulated hit state - no need for final SDF call
+        v128_t hit = accumulated_hit;
 
         // Extract hit mask to check if ANY ray hit
         i32 hit_arr[4];
@@ -612,24 +659,29 @@ void march_rays(void) {
         f32 bright_arr[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
         if (any_hit) {
-            // Compute normals (central differences) - 6 SDF calls
+            // Compute normals using tetrahedron technique - 4 SDF calls instead of 6
+            // Based on https://iquilezles.org/articles/normalsSDF/
             v128_t eps = wasm_f32x4_splat(NORMAL_EPS);
+            v128_t neg_eps = wasm_f32x4_splat(-NORMAL_EPS);
 
-            v128_t nx = wasm_f32x4_sub(
-                scene_sdf_simd(wasm_f32x4_add(px, eps), py, pz),
-                scene_sdf_simd(wasm_f32x4_sub(px, eps), py, pz)
-            );
-            v128_t ny = wasm_f32x4_sub(
-                scene_sdf_simd(px, wasm_f32x4_add(py, eps), pz),
-                scene_sdf_simd(px, wasm_f32x4_sub(py, eps), pz)
-            );
-            v128_t nz = wasm_f32x4_sub(
-                scene_sdf_simd(px, py, wasm_f32x4_add(pz, eps)),
-                scene_sdf_simd(px, py, wasm_f32x4_sub(pz, eps))
-            );
-            perf_metrics[PERF_NORMAL_SDF_CALLS] += 6.0f;  // 6 SDF calls for normals
+            // Tetrahedron vertices: (+,+,-), (+,-,+), (-,+,+), (-,-,-)
+            v128_t d0 = scene_sdf_simd(
+                wasm_f32x4_add(px, eps), wasm_f32x4_add(py, eps), wasm_f32x4_add(pz, neg_eps));
+            v128_t d1 = scene_sdf_simd(
+                wasm_f32x4_add(px, eps), wasm_f32x4_add(py, neg_eps), wasm_f32x4_add(pz, eps));
+            v128_t d2 = scene_sdf_simd(
+                wasm_f32x4_add(px, neg_eps), wasm_f32x4_add(py, eps), wasm_f32x4_add(pz, eps));
+            v128_t d3 = scene_sdf_simd(
+                wasm_f32x4_add(px, neg_eps), wasm_f32x4_add(py, neg_eps), wasm_f32x4_add(pz, neg_eps));
 
-            // Normalize
+            // Combine: nx = d0 + d1 - d2 - d3, ny = d0 - d1 + d2 - d3, nz = -d0 + d1 + d2 - d3
+            v128_t nx = wasm_f32x4_sub(wasm_f32x4_add(d0, d1), wasm_f32x4_add(d2, d3));
+            v128_t ny = wasm_f32x4_sub(wasm_f32x4_add(d0, d2), wasm_f32x4_add(d1, d3));
+            v128_t nz = wasm_f32x4_sub(wasm_f32x4_add(d1, d2), wasm_f32x4_add(d0, d3));
+
+            perf_metrics[PERF_NORMAL_SDF_CALLS] += 4.0f;  // 4 SDF calls for normals
+
+            // Normalize using fast reciprocal sqrt approximation
             v128_t len_sq = wasm_f32x4_add(wasm_f32x4_add(
                 wasm_f32x4_mul(nx, nx),
                 wasm_f32x4_mul(ny, ny)),
@@ -639,22 +691,17 @@ void march_rays(void) {
             ny = wasm_f32x4_mul(ny, inv_len);
             nz = wasm_f32x4_mul(nz, inv_len);
 
-            // Directional light from (1, 1, -1) normalized
-            v128_t lx = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
-            v128_t ly = wasm_f32x4_splat(LIGHT_DIR_COMPONENT);
-            v128_t lz = wasm_f32x4_splat(-LIGHT_DIR_COMPONENT);
-
-            // N dot L
+            // N dot L (using precomputed light direction constants)
             v128_t ndotl = wasm_f32x4_add(wasm_f32x4_add(
-                wasm_f32x4_mul(nx, lx),
-                wasm_f32x4_mul(ny, ly)),
-                wasm_f32x4_mul(nz, lz));
-            ndotl = wasm_f32x4_max(ndotl, wasm_f32x4_splat(0.0f));
+                wasm_f32x4_mul(nx, light_x),
+                wasm_f32x4_mul(ny, light_y)),
+                wasm_f32x4_mul(nz, light_z));
+            ndotl = wasm_f32x4_max(ndotl, zero_simd);
 
-            // Ambient + diffuse
+            // Ambient + diffuse (using precomputed constants)
             v128_t brightness = wasm_f32x4_add(
-                wasm_f32x4_splat(AMBIENT_WEIGHT),
-                wasm_f32x4_mul(ndotl, wasm_f32x4_splat(DIFFUSE_WEIGHT))
+                ambient_simd,
+                wasm_f32x4_mul(ndotl, diffuse_simd)
             );
 
             wasm_v128_store(bright_arr, brightness);

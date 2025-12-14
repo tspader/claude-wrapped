@@ -46,7 +46,7 @@ export const config = {
   },
   scene: {
     seed: 42,
-    smoothK: 1.0,  // Lower = faster convergence, less blobby
+    smoothK: 2.0,  // Lower = faster convergence, less blobby
     colorBlendK: 0.5,
 
     columns: {
@@ -408,7 +408,7 @@ export function makeSceneData(t: number): ObjectDef[] {
   const cDz = pnoise1(cnz + t * driftSpeed, 2) * driftScale * noiseScale;
 
   const claudePos: Vec3 = [cx + cDx, cy + cDy, cz + cDz];
-  const claudeScale = 2.0;
+  const claudeScale = 1.0;
   objects.push(...getClaudeBoxes(claudePos, claudeScale, SceneGroups.CLAUDE));
 
   return objects;

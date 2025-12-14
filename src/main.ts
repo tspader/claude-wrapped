@@ -761,7 +761,7 @@ async function main(): Promise<void> {
     border: true,
     borderStyle: "single",
     borderColor: "#FFFFFF",
-    backgroundColor: RGBA.fromValues(0, 0, 0, 0.5),
+    backgroundColor: RGBA.fromValues(0, 0, 0, 0.0),
     padding: 1,
   });
 
