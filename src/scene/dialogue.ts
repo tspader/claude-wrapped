@@ -17,7 +17,7 @@ interface BaseNode {
 /** Text node - displays text, waits for advance */
 export interface TextNode extends BaseNode {
   type: "text";
-  text: StyledText;
+  text: StyledText | ((getData: (key: string) => any) => StyledText);
   /** Script to run in parallel with typing */
   script?: Script;
 }
@@ -92,6 +92,7 @@ export class DialogueExecutor {
   private actionQueue: ActionQueue;
   private data: Record<string, any> = {};
   private abortController: AbortController;
+  private resolvedText: StyledText | null = null;
 
   // Callbacks for UI
   public onTextUpdate?: (text: StyledText, index: number, finished: boolean) => void;
@@ -209,6 +210,11 @@ export class DialogueExecutor {
     return this.data[key];
   }
 
+  /** Resolve text (handles function or static) */
+  private getText(node: TextNode | PromptNode): StyledText {
+    return typeof node.text === "function" ? node.text((k) => this.getData(k)) : node.text;
+  }
+
   // ===========================================================================
   // Internal
   // ===========================================================================
@@ -227,7 +233,8 @@ export class DialogueExecutor {
         this.state.phase = "typing";
         this.state.typingIndex = 0;
         this.state.typingTimer = 0;
-        this.onTextUpdate?.(node.text, 0, false);
+        this.resolvedText = this.getText(node);
+        this.onTextUpdate?.(this.resolvedText, 0, false);
         // Start script in parallel if present
         if (node.script) {
           for (const action of node.script) {
@@ -272,8 +279,9 @@ export class DialogueExecutor {
 
   private tickTyping(dt: number, node: DialogueNode): void {
     if (node.type !== "text" && node.type !== "prompt") return;
+    if (!this.resolvedText) return;
 
-    const plainText = node.text.chunks.map(c => c.text).join("");
+    const plainText = this.resolvedText.chunks.map((c: any) => c.text).join("");
     if (this.state.typingIndex >= plainText.length) {
       this.finishTyping(node);
       return;
@@ -298,16 +306,17 @@ export class DialogueExecutor {
         }
       }
 
-      this.onTextUpdate?.(node.text, this.state.typingIndex, false);
+      this.onTextUpdate?.(this.resolvedText, this.state.typingIndex, false);
     }
   }
 
   private finishTyping(node: DialogueNode): void {
     if (node.type !== "text" && node.type !== "prompt") return;
+    if (!this.resolvedText) return;
 
-    const plainText = node.text.chunks.map(c => c.text).join("");
+    const plainText = this.resolvedText.chunks.map((c: any) => c.text).join("");
     this.state.typingIndex = plainText.length;
-    this.onTextUpdate?.(node.text, this.state.typingIndex, true);
+    this.onTextUpdate?.(this.resolvedText, this.state.typingIndex, true);
 
     if (node.type === "prompt") {
       this.state.phase = "waiting";

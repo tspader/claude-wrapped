@@ -134,6 +134,7 @@ But, if you'd still rather not, you can quit the program now`,
           try {
             const response = await postStatsToApi(stats);
             ctx.setData("entry", response.entry);
+            ctx.setData("percentiles", response.percentiles);
             ctx.setData("global", response.global);
             ctx.setData("stats", stats);
             ctx.setStatus(text`${fg("#66FF66")("Success!")}`);
@@ -189,25 +190,69 @@ But, if you'd still rather not, you can quit the program now`,
     type: "script",
     script: [
       { type: "lerp", target: "camera.x", to: -2.0, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "camera.y", to: 2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: 1.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.z", to: -2.0, duration: 1.5, easing: easeInOutCubic },
     ],
-    next: "world",
+    next: "stat-messages",
+  },
+
+  // Stats display nodes
+  {
+    id: "stat-messages",
+    type: "text",
+    text: (getData) => {
+      const entry = getData("entry");
+      const percentiles = getData("percentiles");
+      const pct = Math.round(percentiles?.messages || 0);
+      return text`Messages: ${fg(CLAUDE_COLOR)(String(entry?.total_messages || 0))} (${pct}th percentile)`;
+    },
+    next: "move-center",
+  },
+
+  {
+    id: "move-center",
+    type: "script",
+    script: [
+      { type: "lerp", target: "camera.x", to: 0.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: 1.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.z", to: -3.0, duration: 1.5, easing: easeInOutCubic },
+    ],
+    next: "stat-tokens",
   },
   {
-    id: "world",
+    id: "stat-tokens",
     type: "text",
-    text: text`world`,
+    text: (getData) => {
+      const entry = getData("entry");
+      const percentiles = getData("percentiles");
+      const pct = Math.round(percentiles?.tokens || 0);
+      const tokens = entry?.total_tokens || 0;
+      const formatted = tokens >= 1000000 ? `${(tokens / 1000000).toFixed(1)}M` : tokens >= 1000 ? `${(tokens / 1000).toFixed(0)}K` : String(tokens);
+      return text`Tokens: ${fg(CLAUDE_COLOR)(formatted)} (${pct}th percentile)`;
+    },
     next: "move-top-right",
   },
+
   {
     id: "move-top-right",
     type: "script",
     script: [
       { type: "lerp", target: "camera.x", to: 2.0, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "camera.y", to: 2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: 1.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.z", to: -2.0, duration: 1.5, easing: easeInOutCubic },
     ],
+    next: "stat-cost",
+  },
+  {
+    id: "stat-cost",
+    type: "text",
+    text: (getData) => {
+      const entry = getData("entry");
+      const percentiles = getData("percentiles");
+      const pct = Math.round(percentiles?.cost || 0);
+      const cost = entry?.total_cost || 0;
+      return text`Cost: ${fg(CLAUDE_COLOR)(`$${cost.toFixed(2)}`)} (${pct}th percentile)`;
+    },
     next: "end",
   },
   {
