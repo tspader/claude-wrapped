@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Standalone dialogue demo - bypasses old StatsBox, uses new dialogue system.
+ * Claude Wrapped - TUI with raymarched scene and dialogue system.
  */
 
 import {
@@ -13,6 +13,7 @@ import {
   fg,
   dim,
   bold,
+  underline,
   StyledText,
   type TextChunk,
   brightYellow,
@@ -23,24 +24,38 @@ import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import {
   compileScene,
-  setActiveScene,
-  getActiveScene,
+  getClaudeBoxes,
   type FlatScene,
   ShapeType,
   BlendMode,
   type ObjectDef,
   type GroupDef,
-  type LightingConfig,
-  type Vec3 as SceneVec3,
 } from "./scene";
-import { ActionQueue, easeOutCubic, easeInOutCubic, easeInQuad } from "./scene/script";
+import { ActionQueue, easeInOutCubic, easeInQuad } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
 import { seededRandom, createNoiseGenerator } from "./scene/utils";
 import { checkStatsExistence, readStatsCache, postStatsToApi, invokeClaudeStats } from "./utils/stats";
 
-// Register scene (side effect)
-import "./scenes/scripted";
-import { dir } from "console";
+// =============================================================================
+// Scene Config (inlined from scripted.ts)
+// =============================================================================
+
+const sceneConfig = {
+  camera: {
+    eye: [0.0, 0.5, -5.0] as Vec3,
+    at: [0.0, 0.0, 0.0] as Vec3,
+    up: [0.0, 1.0, 0.0] as Vec3,
+    fov: 25,
+  },
+};
+
+const CLAUDE_GROUP = 0;
+const SNOW_GROUP = 1;
+
+const groupDefs: GroupDef[] = [
+  { blendMode: BlendMode.HARD }, // claude
+  { blendMode: BlendMode.HARD }, // snow
+];
 
 // =============================================================================
 // Snow Config
@@ -68,8 +83,6 @@ interface Snowflake {
   driftX: number;
   driftZ: number;
 }
-
-const SNOW_GROUP = 1;
 
 // =============================================================================
 // Dialogue Nodes
@@ -196,6 +209,7 @@ But, if you'd still rather not, you can quit the program now`,
     next: "move-top-left",
   },
 
+  // Stats display nodes
   {
     id: "move-top-left",
     type: "script",
@@ -207,8 +221,6 @@ But, if you'd still rather not, you can quit the program now`,
     ],
     next: "stat-messages",
   },
-
-  // Stats display nodes
   {
     id: "stat-messages",
     type: "text",
@@ -247,6 +259,37 @@ But, if you'd still rather not, you can quit the program now`,
   },
 
   {
+    id: "move-under",
+    type: "script",
+    script: [
+      { type: "lerp", target: "camera.x", to: 0.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: -0.8, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.z", to: -1.5, duration: 1.5, easing: easeInOutCubic },
+    ],
+    next: "stat-persona",
+  },
+  {
+    id: "stat-persona",
+    type: "text",
+    text: (getData) => {
+      const entry = getData("entry");
+      const persona = entry?.time_persona ?? 4;
+      const labels = ["Morning Person", "Afternoon Person", "Evening Person", "Night Owl", "Mystery"];
+      const label = labels[persona] || "Mystery";
+      const counts = [
+        entry?.morning_count || 0,
+        entry?.afternoon_count || 0,
+        entry?.evening_count || 0,
+        entry?.night_count || 0,
+      ];
+      const total = counts.reduce((a, b) => a + b, 0);
+      const pct = total > 0 ? Math.round((counts[persona] || 0) / total * 100) : 0;
+      return text`You're a ${fg(CLAUDE_COLOR)(label)} (${pct}% of sessions)`;
+    },
+    next: "move-top-right",
+  },
+
+  {
     id: "move-top-right",
     type: "script",
     script: [
@@ -278,14 +321,34 @@ But, if you'd still rather not, you can quit the program now`,
       { type: "lerp", target: "camera.z", to: -3.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "smoothK", to: 0.0, duration: 4, easing: easeInOutCubic },
     ],
-    next: "end",
+    next: "epilogue_001",
+  },
+  {
+    id: "epilogue_001",
+    type: "text",
+    text: text`That's it. It's done.
+
+Did I spend far, far too much time writing an SDF raymarcher instead of making this a fun wrapped?
+
+Yeah, probably. But, damn it, this is the world we live in! A world where TUIs are worth a billion dollars, and text streams are the universal interface. A world with WebAssembly, and LLVM, and Bun, with HTML and CSS and Yoga and OpenTUI, and a world with Inigo Quilez, and Andrew Kelley, and jart, and Carmack, and Karpathy, and Jon, and Casey.`,
+    next: "epilogue_002"
+  },
+  {
+    id: "epilogue_002",
+    type: "text",
+    text: text`And, of course, a world with Fabrice Bellard. Fabrice, if this gets to you -- thanks. To you, and all named, and to many, many unnamed: Thank you!`,
+    next: "end"
   },
   {
     id: "end",
     type: "text",
-    text: text`Demo complete.
+    text: text`If you enjoyed this, please play Deep Copy's free demo. It's a a top down point-and-click literary adventure set in a hand-painted science fiction world, for lovers of Philip K. Dick, Pynchon, Disco Elysium, and classic adventure games.
 
-Press Ctrl+C to exit.`,
+${underline(fg("#58A6FF")("store.steampowered.com/app/2639990/Deep_Copy/"))}
+
+
+
+${underline(fg("#58A6FF")("https://github.com/tspader/spn"))}`,
     next: "end",
   },
 ];
@@ -470,10 +533,6 @@ function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
 async function main() {
   const wasm = await loadWasm();
 
-  // Initialize scene (just for the 3D rendering, dialogue is separate)
-  const scene = setActiveScene("scripted");
-  const { config } = scene;
-
   // Create renderer
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -548,22 +607,16 @@ async function main() {
   // ==========================================================================
 
   const cameraState = {
-    x: config.camera.eye[0],
-    y: config.camera.eye[1],
-    z: config.camera.eye[2],
-    fov: config.camera.fov,
+    x: sceneConfig.camera.eye[0],
+    y: sceneConfig.camera.eye[1],
+    z: sceneConfig.camera.eye[2],
+    fov: sceneConfig.camera.fov,
   };
 
   // Static lighting config
-  let ambientIntensity = 0.4
-  let directionalIntensity = 1.0
-  const lighting: LightingConfig = {
-    ambient: ambientIntensity,
-    directional: {
-      direction: [0.5, 0.75, -1.0] as SceneVec3,
-      intensity: directionalIntensity,
-    },
-  };
+  let ambientIntensity = 0.4;
+  let directionalIntensity = 1.0;
+  const lightDirection: Vec3 = [0.5, 0.75, -1.0];
 
   // Dramatic point light state (dialogue-controlled)
   const dramaticLight = {
@@ -572,11 +625,11 @@ async function main() {
     z: -1.0,
     intensity: 0,
   };
-  const dramaticLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+  const dramaticLightColor: Vec3 = [0.8, 0.9, 1.0];
 
   // Snowflake point lights (dialogue-controlled intensity)
   let snowLightIntensity = 0;
-  const snowLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+  const snowLightColor: Vec3 = [0.8, 0.9, 1.0];
   const snowLightRadius = 0.2;
 
   const dramaticLightRadius = 0.5;
@@ -761,9 +814,6 @@ async function main() {
     renderer.setBackgroundColor(RGBA.fromValues(bg[0], bg[1], bg[2], 1));
     canvas.frameBuffer.clear(RGBA.fromValues(bg[0], bg[1], bg[2], 1));
 
-    const sceneObj = getActiveScene();
-    const frame = sceneObj.update(time);
-
     // Update snowflakes
     const snowDt = time - lastTime;
     lastTime = time;
@@ -784,7 +834,8 @@ async function main() {
       }
     }
 
-    // Add snowflakes to scene objects
+    // Build scene objects: Claude + snowflakes
+    const claudeObjects = getClaudeBoxes([0, 0, 0], 1.0, CLAUDE_GROUP);
     const snowObjects: ObjectDef[] = snowflakes.map((flake) => ({
       shape: {
         type: ShapeType.SPHERE,
@@ -795,13 +846,8 @@ async function main() {
       group: SNOW_GROUP,
     }));
 
-    const allObjects = [...frame.objects, ...snowObjects];
-    const extendedGroupDefs: GroupDef[] = [
-      ...sceneObj.groupDefs,
-      { blendMode: BlendMode.HARD }, // snow group
-    ];
-
-    const flatScene = compileScene(allObjects, extendedGroupDefs, smoothK);
+    const allObjects = [...claudeObjects, ...snowObjects];
+    const flatScene = compileScene(allObjects, groupDefs, smoothK);
     loadScene(wasm, flatScene);
 
     // Calculate perlin noise camera jitter
@@ -812,8 +858,8 @@ async function main() {
     // Use dialogue-controlled camera with perlin noise jitter
     const camera = new Camera({
       eye: [cameraState.x + noiseX, cameraState.y + noiseY, cameraState.z + noiseZ] as Vec3,
-      at: config.camera.at,
-      up: config.camera.up,
+      at: sceneConfig.camera.at,
+      up: sceneConfig.camera.up,
       fov: cameraState.fov,
     });
 
@@ -821,7 +867,7 @@ async function main() {
     wasm.exports.generate_rays(sceneWidth, sceneHeight);
 
     // Directional light
-    const [dx, dy, dz] = lighting.directional.direction;
+    const [dx, dy, dz] = lightDirection;
     wasm.exports.set_lighting(ambientIntensity, dx, dy, dz, directionalIntensity);
 
     // Dramatic point light (index 0)
