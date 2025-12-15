@@ -34,17 +34,8 @@ import "./scenes/tpose";
 
 interface WasmExports {
   memory: WebAssembly.Memory;
-  // Ray buffer pointers
+  // Background color pointer
   get_bg_ptr: () => number;
-  get_ray_ox_ptr: () => number;
-  get_ray_oy_ptr: () => number;
-  get_ray_oz_ptr: () => number;
-  get_ray_dx_ptr: () => number;
-  get_ray_dy_ptr: () => number;
-  get_ray_dz_ptr: () => number;
-  get_out_r_ptr: () => number;
-  get_out_g_ptr: () => number;
-  get_out_b_ptr: () => number;
   // Scene buffer pointers
   get_shape_types_ptr: () => number;
   get_shape_params_ptr: () => number;
@@ -70,7 +61,6 @@ interface WasmExports {
   get_max_rays: () => number;
   get_max_shapes: () => number;
   get_max_groups: () => number;
-  set_ray_count: (count: number) => void;
   set_scene: (count: number, smoothK: number) => void;
   set_groups: (count: number) => void;
   set_camera: (
@@ -116,16 +106,7 @@ interface WasmRenderer {
   maxShapes: number;
   maxGroups: number;
   maxPointLights: number;
-  // Ray buffer views
-  rayOx: Float32Array;
-  rayOy: Float32Array;
-  rayOz: Float32Array;
-  rayDx: Float32Array;
-  rayDy: Float32Array;
-  rayDz: Float32Array;
-  outR: Float32Array;
-  outG: Float32Array;
-  outB: Float32Array;
+  // Background color
   bgColor: Float32Array;
   // Scene buffer views
   shapeTypes: Uint8Array;
@@ -199,16 +180,7 @@ async function loadWasm(): Promise<WasmRenderer> {
     maxShapes,
     maxGroups,
     maxPointLights,
-    // Ray buffers
-    rayOx: new Float32Array(memory.buffer, exports.get_ray_ox_ptr(), maxRays),
-    rayOy: new Float32Array(memory.buffer, exports.get_ray_oy_ptr(), maxRays),
-    rayOz: new Float32Array(memory.buffer, exports.get_ray_oz_ptr(), maxRays),
-    rayDx: new Float32Array(memory.buffer, exports.get_ray_dx_ptr(), maxRays),
-    rayDy: new Float32Array(memory.buffer, exports.get_ray_dy_ptr(), maxRays),
-    rayDz: new Float32Array(memory.buffer, exports.get_ray_dz_ptr(), maxRays),
-    outR: new Float32Array(memory.buffer, exports.get_out_r_ptr(), maxRays),
-    outG: new Float32Array(memory.buffer, exports.get_out_g_ptr(), maxRays),
-    outB: new Float32Array(memory.buffer, exports.get_out_b_ptr(), maxRays),
+    // Background color
     bgColor: new Float32Array(memory.buffer, exports.get_bg_ptr(), 3),
     // Scene buffers
     shapeTypes: new Uint8Array(memory.buffer, exports.get_shape_types_ptr(), maxShapes),

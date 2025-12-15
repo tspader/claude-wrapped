@@ -170,22 +170,12 @@ void   init_simd_constants(void);
 f32* get_perf_metrics_ptr(void);
 void reset_perf_metrics(void);
 f32* get_bg_ptr(void);
-f32* get_ray_ox_ptr(void);
-f32* get_ray_oy_ptr(void);
-f32* get_ray_oz_ptr(void);
-f32* get_ray_dx_ptr(void);
-f32* get_ray_dy_ptr(void);
-f32* get_ray_dz_ptr(void);
-f32* get_out_r_ptr(void);
-f32* get_out_g_ptr(void);
-f32* get_out_b_ptr(void);
 u8*  get_shape_types_ptr(void);
 f32* get_shape_params_ptr(void);
 f32* get_shape_positions_ptr(void);
 f32* get_shape_colors_ptr(void);
 u8*  get_shape_groups_ptr(void);
 u8*  get_group_blend_modes_ptr(void);
-void set_ray_count(u32 count);
 void set_scene(u32 count, f32 k);
 void set_groups(u32 count);
 u32  get_max_shapes(void);
@@ -487,15 +477,6 @@ void reset_perf_metrics(void) {
 }
 
 f32* get_bg_ptr(void) { return bg_color; }
-f32* get_ray_ox_ptr(void) { return ray_ox; }
-f32* get_ray_oy_ptr(void) { return ray_oy; }
-f32* get_ray_oz_ptr(void) { return ray_oz; }
-f32* get_ray_dx_ptr(void) { return ray_dx; }
-f32* get_ray_dy_ptr(void) { return ray_dy; }
-f32* get_ray_dz_ptr(void) { return ray_dz; }
-f32* get_out_r_ptr(void) { return out_r; }
-f32* get_out_g_ptr(void) { return out_g; }
-f32* get_out_b_ptr(void) { return out_b; }
 
 u8* get_shape_types_ptr(void) { return shape_types; }
 f32* get_shape_params_ptr(void) { return shape_params; }
@@ -503,10 +484,6 @@ f32* get_shape_positions_ptr(void) { return shape_positions; }
 f32* get_shape_colors_ptr(void) { return shape_colors; }
 u8* get_shape_groups_ptr(void) { return shape_groups; }
 u8* get_group_blend_modes_ptr(void) { return group_blend_mode; }
-
-void set_ray_count(u32 count) {
-  ray_count = count < MAX_RAYS ? count : MAX_RAYS;
-}
 
 void init_simd_constants(void) {
   max_dist_simd = wasm_f32x4_splat(MAX_DIST);
