@@ -208,10 +208,10 @@ function update(t: number): SceneFrame {
       at: [floatX, floatY, floatZ] as Vec3,
     },
     lighting: {
-      ambient: 0.3,
+      ambient: 0.5,
       directional: {
         direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
-        intensity: 0.3,  // reduced - let point light dominate
+        intensity: 0.1,  // reduced - let point light dominate
       },
       pointLights: [
         {

@@ -37,7 +37,7 @@ const config: SceneConfig = {
       intensity: 0.9,
     },
   },
-  smoothK: 0.0,
+  smoothK: 2.0,
 };
 
 // Scene-specific config
@@ -225,7 +225,6 @@ function update(t: number): SceneFrame {
   const objects: ObjectDef[] = [];
 
   // Blob cylinders (oriented along X-axis for left-to-right)
-  const { cylinderHalfHeight } = sceneParams.beams;
   for (let i = 0; i < basePositions.length; i++) {
     const [bx, by, bz] = basePositions[i]!;
     const [nx, ny, nz] = noiseOffsets[i]!;
@@ -243,7 +242,7 @@ function update(t: number): SceneFrame {
     const radius = Math.max(0.1, baseSizes[i]! + osc + noiseSize);
 
     objects.push({
-      shape: { type: ShapeType.CYLINDER, params: [radius, cylinderHalfHeight], color: colors.blob },
+      shape: { type: ShapeType.SPHERE, params: [radius], color: colors.blob },
       position: pos,
       group: SceneGroups.BLOBS,
     });
@@ -297,11 +296,6 @@ function update(t: number): SceneFrame {
           radius: 4.0,
         },
       ],
-    },
-    snow: {
-      count: 200,
-      baseSpeed: 10.0,
-      driftStrength: 2.0,
     },
   };
 }

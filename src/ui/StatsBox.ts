@@ -134,11 +134,11 @@ export class StatsBox {
     const innerWidth = this.boxWidth - 4;
     const claudeStyle = fg(CLAUDE_COLOR);
     const wrappedStyle = fg(WRAPPED_COLOR);
-    
+
     if (this.useLogo) {
       // Center each line of CLAUDE (orange), then WRAPPED (off-white)
       const parts: TextChunk[] = [];
-      
+
       for (let i = 0; i < CLAUDE_LOGO.length; i++) {
         const line = CLAUDE_LOGO[i]!;
         const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
@@ -146,9 +146,9 @@ export class StatsBox {
         parts.push(plainChunk(" ".repeat(pad)));
         parts.push(claudeStyle(line));
       }
-      
-      parts.push(plainChunk("\n\n")); // blank line between
-      
+
+      parts.push(plainChunk("\n")); // blank line between
+
       for (let i = 0; i < WRAPPED_LOGO.length; i++) {
         const line = WRAPPED_LOGO[i]!;
         const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
@@ -156,7 +156,7 @@ export class StatsBox {
         parts.push(plainChunk(" ".repeat(pad)));
         parts.push(wrappedStyle(line));
       }
-      
+
       return concatStyledText(...parts);
     } else {
       // Centered bold text - CLAUDE orange, WRAPPED off-white
