@@ -24,7 +24,7 @@ import { t, green, cyan } from "@opentui/core";
 
 const config: SceneConfig = {
   camera: {
-    eye: [0.0, 1.0, -5.0] as Vec3,
+    eye: [0.0, 0.5, -5.0] as Vec3,
     at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
     fov: 25,

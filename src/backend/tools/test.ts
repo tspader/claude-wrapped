@@ -1,27 +1,15 @@
-const BASE = "http://127.0.0.1:8787";
+import { readStatsCache, postStatsToApi } from "../../utils/stats";
 
 async function postAndGet() {
-  const stats = await Bun.file(`${process.env.HOME}/.claude/stats-cache.json`).json();
-
-  const postRes = await fetch(`${BASE}/stats`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      external_id: "test-user-1",
-      stats,
-    }),
-  });
-  const postText = await postRes.text();
-  console.log("POST /stats:", postText);
-
-  const getRes = await fetch(`${BASE}/stats/test-user-1`);
-  const getText = await getRes.text();
-  console.log("GET /stats:", getText);
+  const stats = readStatsCache();
+  console.log("Posting stats via postStatsToApi...");
+  const result = await postStatsToApi(stats);
+  console.log(JSON.stringify(result, null, 2));
 }
 
 async function triggerGlobal() {
-  // Trigger scheduled event via wrangler dev's __scheduled endpoint
-  const res = await fetch(`${BASE}/__scheduled?cron=*+*+*+*+*`, {
+  const API_URL = process.env.CLAUDE_WRAPPED_API_URL || "http://localhost:8787";
+  const res = await fetch(`${API_URL}/__scheduled?cron=*+*+*+*+*`, {
     method: "GET",
   });
   console.log("Triggered scheduled:", res.status, await res.text());

@@ -178,7 +178,8 @@ But, if you'd still rather not, you can quit the program now`,
     type: "script",
     script: [
       { type: "lerp", target: "light.y", to: 0.8, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "light.z", to: 0.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "light.z", to: 0.3, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "snowLightIntensity", to: 2.0, duration: 1.5, easing: easeInQuad },
     ],
     next: "move-top-left",
   },
@@ -500,6 +501,12 @@ async function main() {
     intensity: 0,
   };
   const dramaticLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+
+  // Snowflake point lights (dialogue-controlled intensity)
+  let snowLightIntensity = 0;
+  const snowLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+  const snowLightRadius = 0.2;
+
   const dramaticLightRadius = 0.5;
 
   // ==========================================================================
@@ -548,6 +555,7 @@ async function main() {
         case "light.y": return dramaticLight.y;
         case "light.z": return dramaticLight.z;
         case "light.intensity": return dramaticLight.intensity;
+        case "snowLightIntensity": return snowLightIntensity;
         default: return 0;
       }
     },
@@ -561,6 +569,7 @@ async function main() {
         case "light.y": dramaticLight.y = value; break;
         case "light.z": dramaticLight.z = value; break;
         case "light.intensity": dramaticLight.intensity = value; break;
+        case "snowLightIntensity": snowLightIntensity = value; break;
       }
     }
   );
@@ -735,7 +744,7 @@ async function main() {
     const [dx, dy, dz] = lighting.directional.direction;
     wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
 
-    // Single dramatic point light
+    // Dramatic point light (index 0)
     wasm.pointLightX[0] = dramaticLight.x;
     wasm.pointLightY[0] = dramaticLight.y;
     wasm.pointLightZ[0] = dramaticLight.z;
@@ -744,7 +753,22 @@ async function main() {
     wasm.pointLightB[0] = dramaticLightColor[2];
     wasm.pointLightIntensity[0] = dramaticLight.intensity;
     wasm.pointLightRadius[0] = dramaticLightRadius;
-    wasm.exports.set_point_lights(1);
+
+    // Snowflake point lights (indices 1-30)
+    const numSnowLights = Math.min(snowflakes.length, 30);
+    for (let i = 0; i < numSnowLights; i++) {
+      const flake = snowflakes[i]!;
+      const idx = i + 1;
+      wasm.pointLightX[idx] = flake.x;
+      wasm.pointLightY[idx] = flake.y;
+      wasm.pointLightZ[idx] = flake.z;
+      wasm.pointLightR[idx] = snowLightColor[0];
+      wasm.pointLightG[idx] = snowLightColor[1];
+      wasm.pointLightB[idx] = snowLightColor[2];
+      wasm.pointLightIntensity[idx] = snowLightIntensity;
+      wasm.pointLightRadius[idx] = snowLightRadius;
+    }
+    wasm.exports.set_point_lights(1 + numSnowLights);
     wasm.exports.march_rays();
     wasm.exports.composite(sceneWidth, sceneHeight);
 

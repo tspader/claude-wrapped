@@ -33,28 +33,29 @@ export interface Entry {
   evening_count: number;
   night_count: number;
   time_persona: number;
-  most_active_day: number;
-  most_active_day_tokens: number;
-  most_active_day_messages: number;
 }
 
 export interface GlobalStats {
   total_entries: number;
-  highest_total_messages: number;
-  highest_total_tokens: number;
-  highest_total_cost: number;
-  highest_most_active_day_tokens: number;
-  highest_most_active_day_messages: number;
   avg_total_messages: number;
   avg_total_tokens: number;
   avg_total_cost: number;
-  avg_most_active_day_tokens: number;
-  avg_most_active_day_messages: number;
   morning_person_count: number;
   afternoon_person_count: number;
   evening_person_count: number;
   night_person_count: number;
   unknown_person_count: number;
+  // Histogram thresholds (deciles)
+  messages_percentiles: number[];  // [p10, p20, ..., p100]
+  tokens_percentiles: number[];
+  cost_percentiles: number[];
+}
+
+// Percentiles for a single entry
+export interface EntryPercentiles {
+  messages: number;  // 0-100
+  tokens: number;
+  cost: number;
 }
 
 // API request/response types
@@ -66,10 +67,12 @@ export interface PostStatsRequest {
 export interface PostStatsResponse {
   ok: boolean;
   entry: Entry;
+  percentiles: EntryPercentiles;
   global: GlobalStats;
 }
 
 export interface GetStatsResponse {
   entry: Entry;
+  percentiles: EntryPercentiles;
   global: GlobalStats;
 }
