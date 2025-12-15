@@ -15,6 +15,7 @@ import {
   bold,
   StyledText,
   type TextChunk,
+  brightYellow,
 } from "@opentui/core";
 import { Camera, type Vec3, normalize, cross, sub } from "./camera";
 import { readFileSync } from "fs";
@@ -75,9 +76,24 @@ const CLAUDE_COLOR = "#E07A3C";
 const nodes: DialogueNode[] = [
   {
     id: "start",
-    type: "text",
-    text: text`hello`,
-    next: "move-top-left",
+    type: "prompt",
+    text: text`Welcome.
+
+This program will grab some Claude Code usage stats, upload them to a database, and show how you compare to other users across the world.
+
+The data is neither sensitive nor identifiable in any way. We just use the stats that Claude uses when you run ${brightYellow("/stats")}.
+
+But, if you'd still rather not, you can quit the program now`,
+    options: [
+      { label: "Play", target: "move-top-left"},
+      { label: "Quit", target: "quit"},
+    ],
+    next: "move-top-left"
+  },
+  {
+    id: "quit",
+    type: "exit",
+    code: 0,
   },
   {
     id: "move-top-left",
@@ -450,6 +466,11 @@ async function main() {
   dialogue.onHideOptions = () => {
     options = [];
     optionsBox.visible = false;
+  };
+
+  dialogue.onExit = (code) => {
+    renderer.stop();
+    process.exit(code);
   };
 
   function rebuildOptions() {

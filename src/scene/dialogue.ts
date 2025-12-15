@@ -44,7 +44,14 @@ export interface ScriptNode extends BaseNode {
   script: Script;
 }
 
-export type DialogueNode = TextNode | PromptNode | ActionNode | ScriptNode;
+/** Exit node - exits the program */
+export interface ExitNode {
+  id: string;
+  type: "exit";
+  code?: number;
+}
+
+export type DialogueNode = TextNode | PromptNode | ActionNode | ScriptNode | ExitNode;
 
 // =============================================================================
 // Dialogue Context (passed to action nodes)
@@ -90,6 +97,7 @@ export class DialogueExecutor {
   public onTextUpdate?: (text: StyledText, index: number, finished: boolean) => void;
   public onShowOptions?: (options: { label: string; target: string }[]) => void;
   public onHideOptions?: () => void;
+  public onExit?: (code: number) => void;
 
   constructor(
     nodes: DialogueNode[],
@@ -121,13 +129,18 @@ export class DialogueExecutor {
 
   get done(): boolean {
     const node = this.nodes.get(this.state.nodeId);
-    return node?.next === node?.id; // Terminal node loops to self
+    if (!node) return false;
+    if (node.type === "exit") return true;
+    return node.next === node.id; // Terminal node loops to self
   }
 
   /** Update - call each frame with delta time in seconds */
   tick(dt: number): void {
     const node = this.nodes.get(this.state.nodeId);
     if (!node) return;
+
+    // Exit nodes are handled immediately on enter
+    if (node.type === "exit") return;
 
     switch (this.state.phase) {
       case "typing":
@@ -162,11 +175,13 @@ export class DialogueExecutor {
         break;
       case "scripting":
         // Skip all pending actions
-        for (const id of this.state.pendingActions) {
-          this.actionQueue.skip(id);
+        if (node.type === "script") {
+          for (const id of this.state.pendingActions) {
+            this.actionQueue.skip(id);
+          }
+          this.state.pendingActions = [];
+          this.goToNode(node.next);
         }
-        this.state.pendingActions = [];
-        this.goToNode(node.next);
         break;
     }
   }
@@ -244,6 +259,10 @@ export class DialogueExecutor {
           this.state.pendingActions.push(actionId);
         }
         break;
+
+      case "exit":
+        this.onExit?.(node.code ?? 0);
+        break;
     }
   }
 
@@ -306,7 +325,7 @@ export class DialogueExecutor {
 
     if (this.state.pendingActions.length === 0) {
       const node = this.nodes.get(this.state.nodeId);
-      if (node) {
+      if (node && node.type === "script") {
         this.goToNode(node.next);
       }
     }
