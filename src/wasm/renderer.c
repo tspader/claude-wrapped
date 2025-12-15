@@ -46,14 +46,6 @@ static f32 point_light_intensity[MAX_POINT_LIGHTS];
 static f32 point_light_radius[MAX_POINT_LIGHTS];
 static u32 point_light_count = 0;
 
-// Snow particle system (SoA layout for cache efficiency)
-#define MAX_PARTICLES 1024
-static f32 snow_x[MAX_PARTICLES];      // screen-space X (0..width)
-static f32 snow_y[MAX_PARTICLES];      // screen-space Y (0..height)
-static f32 snow_speed[MAX_PARTICLES];  // vertical speed (cells/sec)
-static f32 snow_drift[MAX_PARTICLES];  // horizontal drift (cells/sec)
-static u32 snow_count = 0;
-
 // Precomputed SIMD point light data
 static v128_t pl_x_simd[MAX_POINT_LIGHTS];
 static v128_t pl_y_simd[MAX_POINT_LIGHTS];
@@ -1294,62 +1286,4 @@ void upscale(u32 native_width, u32 native_height, u32 output_width, u32 output_h
     }
 }
 
-// =============================================================================
-// Snow Particle System
-// =============================================================================
 
-f32* get_snow_x_ptr(void) { return snow_x; }
-f32* get_snow_y_ptr(void) { return snow_y; }
-f32* get_snow_speed_ptr(void) { return snow_speed; }
-f32* get_snow_drift_ptr(void) { return snow_drift; }
-u32 get_max_particles(void) { return MAX_PARTICLES; }
-
-void set_snow(u32 count) {
-    snow_count = count < MAX_PARTICLES ? count : MAX_PARTICLES;
-}
-
-// Update snow particle positions
-// dt: delta time in seconds
-// width, height: framebuffer dimensions
-void update_snow(f32 dt, u32 width, u32 height) {
-    f32 w = (f32)width;
-    f32 h = (f32)height;
-
-    for (u32 i = 0; i < snow_count; i++) {
-        // Update position
-        snow_y[i] += snow_speed[i] * dt;
-        snow_x[i] += snow_drift[i] * dt;
-
-        // Wrap horizontally
-        if (snow_x[i] < 0.0f) snow_x[i] += w;
-        if (snow_x[i] >= w) snow_x[i] -= w;
-
-        // Reset to top if fallen off bottom
-        if (snow_y[i] >= h) {
-            snow_y[i] = 0.0f;
-        }
-    }
-}
-
-// Apply snow particles to the composited framebuffer
-// Call after composite() but before copying to OpenTUI
-void apply_snow(u32 width, u32 height) {
-    for (u32 i = 0; i < snow_count; i++) {
-        i32 col = (i32)snow_x[i];
-        i32 row = (i32)snow_y[i];
-
-        // Bounds check
-        if (col < 0 || col >= (i32)width || row < 0 || row >= (i32)height) continue;
-
-        u32 idx = (u32)row * width + (u32)col;
-        if (idx >= MAX_RAYS) continue;
-
-        // Set character to '*' and color to white
-        out_char[idx] = '*';
-        u32 fg_base = idx * 4;
-        out_fg[fg_base]     = 1.0f;  // R
-        out_fg[fg_base + 1] = 1.0f;  // G
-        out_fg[fg_base + 2] = 1.0f;  // B
-        out_fg[fg_base + 3] = 1.0f;  // A
-    }
-}

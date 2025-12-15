@@ -64,12 +64,6 @@ export interface PointLight {
   radius: number;  // falloff distance
 }
 
-export interface SnowConfig {
-  count: number;           // number of particles
-  baseSpeed: number;       // base fall speed (cells/sec)
-  driftStrength: number;   // max horizontal drift (cells/sec)
-}
-
 export interface LightingConfig {
   ambient: number;
   directional: {
@@ -105,7 +99,7 @@ export interface SceneFrame {
   objects: ObjectDef[];
   lighting?: LightingConfig;  // optional per-frame lighting override
   camera?: CameraOverride;    // optional per-frame camera override
-  snow?: SnowConfig;          // optional snow effect
+
 }
 
 export interface Scene {

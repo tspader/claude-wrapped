@@ -94,15 +94,7 @@ interface WasmExports {
   get_upscaled_char_ptr: () => number;
   get_upscaled_fg_ptr: () => number;
   upscale: (nativeW: number, nativeH: number, outW: number, outH: number, scale: number) => void;
-  // Snow particle system
-  get_snow_x_ptr: () => number;
-  get_snow_y_ptr: () => number;
-  get_snow_speed_ptr: () => number;
-  get_snow_drift_ptr: () => number;
-  get_max_particles: () => number;
-  set_snow: (count: number) => void;
-  update_snow: (dt: number, width: number, height: number) => void;
-  apply_snow: (width: number, height: number) => void;
+
 }
 
 // WASM perf metric indices (must match renderer.c)
@@ -160,12 +152,7 @@ interface WasmRenderer {
   // Upscaled output (for scale > 1)
   upscaledChar: Uint32Array;
   upscaledFg: Float32Array;
-  // Snow particle buffers
-  maxParticles: number;
-  snowX: Float32Array;
-  snowY: Float32Array;
-  snowSpeed: Float32Array;
-  snowDrift: Float32Array;
+
 }
 
 // Granular timing for TS-side operations
@@ -248,12 +235,7 @@ async function loadWasm(): Promise<WasmRenderer> {
     // Upscaled output (same max size as native - terminal is the limiting factor)
     upscaledChar: new Uint32Array(memory.buffer, exports.get_upscaled_char_ptr(), maxRays),
     upscaledFg: new Float32Array(memory.buffer, exports.get_upscaled_fg_ptr(), maxRays * 4),
-    // Snow particle buffers
-    maxParticles: exports.get_max_particles(),
-    snowX: new Float32Array(memory.buffer, exports.get_snow_x_ptr(), exports.get_max_particles()),
-    snowY: new Float32Array(memory.buffer, exports.get_snow_y_ptr(), exports.get_max_particles()),
-    snowSpeed: new Float32Array(memory.buffer, exports.get_snow_speed_ptr(), exports.get_max_particles()),
-    snowDrift: new Float32Array(memory.buffer, exports.get_snow_drift_ptr(), exports.get_max_particles()),
+
   };
 }
 
@@ -303,45 +285,6 @@ function loadScene(wasm: WasmRenderer, scene: FlatScene): void {
 
   wasm.exports.set_scene(scene.count, scene.smoothK);
   wasm.exports.set_groups(scene.groupCount);
-}
-
-// =============================================================================
-// Snow Particle System
-// =============================================================================
-
-import type { SnowConfig } from "./scene/types";
-
-// Track current snow state for reinitialization detection
-let currentSnowConfig: SnowConfig | null = null;
-let snowInitializedForSize: { width: number; height: number } | null = null;
-
-/**
- * Initialize snow particles when config changes or screen size changes.
- */
-function initializeSnow(
-  wasm: WasmRenderer,
-  config: SnowConfig,
-  width: number,
-  height: number
-): void {
-  const count = Math.min(config.count, wasm.maxParticles);
-  
-  for (let i = 0; i < count; i++) {
-    // Random position across screen
-    wasm.snowX[i] = Math.random() * width;
-    wasm.snowY[i] = Math.random() * height;
-    
-    // Speed with jitter (±20% of base speed)
-    const jitter = (Math.random() - 0.5) * 0.4 * config.baseSpeed;
-    wasm.snowSpeed[i] = config.baseSpeed + jitter;
-    
-    // Random drift in range [-driftStrength, driftStrength]
-    wasm.snowDrift[i] = (Math.random() - 0.5) * 2 * config.driftStrength;
-  }
-  
-  wasm.exports.set_snow(count);
-  currentSnowConfig = config;
-  snowInitializedForSize = { width, height };
 }
 
 // =============================================================================
@@ -476,25 +419,7 @@ function renderFrame(
     wasm.exports.composite(nativeWidth, nativeHeight);
   }
   
-  // Apply snow effect if scene has snow config (only for non-block mode)
-  if (frame.snow && !useBlocks) {
-    // Check if we need to (re)initialize snow
-    const needsInit = !currentSnowConfig ||
-      currentSnowConfig.count !== frame.snow.count ||
-      currentSnowConfig.baseSpeed !== frame.snow.baseSpeed ||
-      currentSnowConfig.driftStrength !== frame.snow.driftStrength ||
-      !snowInitializedForSize ||
-      snowInitializedForSize.width !== nativeWidth ||
-      snowInitializedForSize.height !== nativeHeight;
-    
-    if (needsInit) {
-      initializeSnow(wasm, frame.snow, nativeWidth, nativeHeight);
-    }
-    
-    // Update and apply snow
-    wasm.exports.update_snow(deltaTime, nativeWidth, nativeHeight);
-    wasm.exports.apply_snow(nativeWidth, nativeHeight);
-  }
+
   timings.compositeMs = performance.now() - t0;
 
   // Upscale if needed, then bulk copy to framebuffer
