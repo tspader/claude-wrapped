@@ -33,7 +33,7 @@ const config: SceneConfig = {
     eye: [0.0, cameraHeight, -cameraDistance] as Vec3,
     at: [0.0, 0.0, 0.0] as Vec3,
     up: [0.0, 1.0, 0.0] as Vec3,
-    fov: 30,
+    fov: 25,
   },
   lighting: {
     ambient: 0.1,
@@ -42,22 +42,22 @@ const config: SceneConfig = {
       intensity: 0.9,
     },
   },
-  smoothK: 0.3,
+  smoothK: 0.0,
 };
 
 const snowParams = {
   count: 30,
   radius: 0.05,
-  baseSpeed: 0.3,
+  baseSpeed: 0.2,
   speedJitter: 0.1,
-  driftStrength: 0.6,
+  driftStrength: 0.3,
   // world space bounds
   minX: -1.5,
   maxX: 1.5,
   minY: -1.0,
-  maxY: 1.5,
-  minZ: -1.5,
-  maxZ: 0.5,
+  maxY: 1.0,
+  minZ: -1.0,
+  maxZ: 1.0,
 };
 
 const sceneParams = {
@@ -127,11 +127,20 @@ function initState(): SceneState {
   const snowflakes: Snowflake[] = [];
   const { count, minX, maxX, minY, maxY, minZ, maxZ, baseSpeed, speedJitter, driftStrength } = snowParams;
 
+  // Spawn snowflakes in a circle above Claude
+  const spawnRadius = 1.5;
+
   for (let i = 0; i < count; i++) {
+    // Random point in circle (uniform distribution)
+    const angle = rng() * Math.PI * 2;
+    const r = Math.sqrt(rng()) * spawnRadius;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+
     snowflakes.push({
-      x: minX + rng() * (maxX - minX),
-      y: minY + rng() * (maxY - minY),
-      z: minZ + rng() * (maxZ - minZ),
+      x,
+      y: minY + rng() * (maxY - minY), // random initial Y within range
+      z,
       speed: baseSpeed + (rng() - 0.5) * 2 * speedJitter,
       driftX: (rng() - 0.5) * 2 * driftStrength,
       driftZ: (rng() - 0.5) * 2 * driftStrength,
@@ -205,11 +214,12 @@ function update(t: number): SceneFrame {
   const camX = Math.sin(angle) * cameraDistance;
   const camZ = -Math.cos(angle) * cameraDistance;
 
-  // Point light 25% of the way from Claude toward camera (along camera vector)
-  const lightT = 0.25;  // 0 = at Claude, 1 = at camera
-  const lightX = camX * lightT;
-  const lightZ = camZ * lightT;
-  const lightY = cameraHeight * lightT;  // interpolate height too
+  const pointLights = snowflakes.map((flake) => ({
+    position: [flake.x, flake.y, flake.z] as Vec3,
+    color: [0.8, 0.9, 1.0] as Vec3,  // cool white/blue
+    intensity: 2.0,
+    radius: 0.2,
+  }));
 
   return {
     objects,
@@ -218,19 +228,12 @@ function update(t: number): SceneFrame {
       at: [floatX, floatY, floatZ] as Vec3,
     },
     lighting: {
-      ambient: 0.5,
+      ambient: 0.0,
       directional: {
-        direction: [camX, cameraHeight, camZ] as Vec3,  // light from camera position
-        intensity: 0.1,  // reduced - let point light dominate
+        direction: [.5, .75, -.25] as Vec3,  // mirrored camera position
+        intensity: 1.0,
       },
-      pointLights: [
-        {
-          position: [lightX + floatX, lightY + floatY, lightZ + floatZ] as Vec3,
-          color: [1.0, 0.9, 0.7] as Vec3,  // warm white
-          intensity: 1.5,   // increased
-          radius: 1.5,      // tighter falloff for more visible gradient
-        },
-      ],
+      pointLights,
     },
     // snow: {
     //   count: 200,

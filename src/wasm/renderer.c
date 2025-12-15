@@ -34,7 +34,7 @@ typedef float f32;
 #define PERF_AVG_STEPS 6
 #define PERF_HIT_RATE 7
 
-#define MAX_POINT_LIGHTS 8
+#define MAX_POINT_LIGHTS 64
 #define MAX_GROUPS 8
 
 #define RGB_AVG_DIVISOR 0.333333f
