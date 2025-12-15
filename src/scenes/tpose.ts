@@ -45,7 +45,7 @@ const config: SceneConfig = {
 // Scene params
 const sceneParams = {
   seed: 123,
-  rotationSpeed: 2.5,
+  rotationSpeed: 0.5,
   floatSpeed: 0.3,
   floatAmount: 0.05,
 };
@@ -69,7 +69,7 @@ const groupDefs: GroupDef[] = [
 // =============================================================================
 
 const snowParams = {
-  count: 50,
+  count: 30,
   radius: 0.05,
   // World-space bounds for snowfall (smaller to stay in view)
   minX: -1.5,
@@ -79,9 +79,9 @@ const snowParams = {
   minZ: -1.5,
   maxZ: 0.5,
   // Speed
-  baseSpeed: 0.3,
+  baseSpeed: 1.3,
   speedJitter: 0.1,
-  driftStrength: 0.2,
+  driftStrength: 1.2,
 };
 
 // =============================================================================
