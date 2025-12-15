@@ -25,12 +25,46 @@ import {
   setActiveScene,
   getActiveScene,
   type FlatScene,
+  ShapeType,
+  BlendMode,
+  type ObjectDef,
+  type GroupDef,
 } from "./scene";
 import { ActionQueue, easeOutCubic, easeInOutCubic } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
+import { seededRandom, createNoiseGenerator } from "./scene/utils";
 
 // Register scene (side effect)
 import "./scenes/scripted";
+
+// =============================================================================
+// Snow Config
+// =============================================================================
+
+const snowParams = {
+  count: 30,
+  radius: 0.05,
+  baseSpeed: 0.2,
+  speedJitter: 0.1,
+  driftStrength: 0.3,
+  minX: -1.5,
+  maxX: 1.5,
+  minY: -1.0,
+  maxY: 1.0,
+  minZ: -1.0,
+  maxZ: 1.0,
+};
+
+interface Snowflake {
+  x: number;
+  y: number;
+  z: number;
+  speed: number;
+  driftX: number;
+  driftZ: number;
+}
+
+const SNOW_GROUP = 1;
 
 // =============================================================================
 // Dialogue Nodes
@@ -41,57 +75,33 @@ const CLAUDE_COLOR = "#E07A3C";
 const nodes: DialogueNode[] = [
   {
     id: "start",
-    type: "script",
-    script: [
-      { type: "lerp", target: "camera.z", to: -3.0, duration: 2.0, easing: easeOutCubic },
-    ],
-    next: "welcome",
-  },
-  {
-    id: "welcome",
     type: "text",
-    text: text`Welcome to the ${fg("#00FF00")("dialogue")} demo.
-
-This shows the new dialogue system
-with camera animations.`,
-    script: [
-      { type: "lerp", target: "camera.x", to: 1.0, duration: 1.5, easing: easeInOutCubic },
-    ],
-    next: "prompt",
+    text: text`hello`,
+    next: "move-top-left",
   },
   {
-    id: "prompt",
-    type: "prompt",
-    text: text`Would you like to see more?`,
-    options: [
-      { label: "YES", target: "orbit" },
-      { label: "NO", target: "end" },
-    ],
-    next: "orbit",
-  },
-  {
-    id: "orbit",
+    id: "move-top-left",
     type: "script",
     script: [
-      { type: "lerp", target: "camera.x", to: 3.0, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "camera.z", to: 0.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.x", to: -2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: 2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.z", to: -2.0, duration: 1.5, easing: easeInOutCubic },
     ],
-    next: "orbited",
+    next: "world",
   },
   {
-    id: "orbited",
+    id: "world",
     type: "text",
-    text: text`The camera just ${fg("#00FFFF")("orbited")} around.
-
-Press space to return.`,
-    next: "return",
+    text: text`world`,
+    next: "move-top-right",
   },
   {
-    id: "return",
+    id: "move-top-right",
     type: "script",
     script: [
-      { type: "lerp", target: "camera.x", to: 0.0, duration: 1.0, easing: easeOutCubic },
-      { type: "lerp", target: "camera.z", to: -3.0, duration: 1.0, easing: easeOutCubic },
+      { type: "lerp", target: "camera.x", to: 2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.y", to: 2.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.z", to: -2.0, duration: 1.5, easing: easeInOutCubic },
     ],
     next: "end",
   },
@@ -361,6 +371,41 @@ async function main() {
     fov: config.camera.fov,
   };
 
+  // ==========================================================================
+  // Snow & Camera Noise State
+  // ==========================================================================
+
+  const rng = seededRandom(123);
+  const pnoise1 = createNoiseGenerator(rng);
+  const noiseOffsetX = rng() * 1000;
+  const noiseOffsetY = rng() * 1000;
+  const noiseOffsetZ = rng() * 1000;
+  const cameraNoiseMagnitude = 0.03;
+  const cameraNoiseSpeed = 0.5;
+
+  // Initialize snowflakes
+  const snowflakes: Snowflake[] = [];
+  const { count, minX, maxX, minY, maxY, minZ, maxZ, baseSpeed, speedJitter, driftStrength } = snowParams;
+  const spawnRadius = 1.5;
+
+  for (let i = 0; i < count; i++) {
+    const angle = rng() * Math.PI * 2;
+    const r = Math.sqrt(rng()) * spawnRadius;
+    const x = Math.cos(angle) * r;
+    const z = Math.sin(angle) * r;
+
+    snowflakes.push({
+      x,
+      y: minY + rng() * (maxY - minY),
+      z,
+      speed: baseSpeed + (rng() - 0.5) * 2 * speedJitter,
+      driftX: (rng() - 0.5) * 2 * driftStrength,
+      driftZ: (rng() - 0.5) * 2 * driftStrength,
+    });
+  }
+
+  let lastTime = 0;
+
   const actionQueue = new ActionQueue(
     (target) => {
       switch (target) {
@@ -485,12 +530,55 @@ async function main() {
 
     const sceneObj = getActiveScene();
     const frame = sceneObj.update(time);
-    const flatScene = compileScene(frame.objects, sceneObj.groupDefs, sceneObj.config.smoothK);
+
+    // Update snowflakes
+    const snowDt = time - lastTime;
+    lastTime = time;
+    for (const flake of snowflakes) {
+      flake.y -= flake.speed * snowDt;
+      flake.x += flake.driftX * snowDt;
+      flake.z += flake.driftZ * snowDt;
+
+      // Wrap horizontally
+      if (flake.x < minX) flake.x += (maxX - minX);
+      if (flake.x > maxX) flake.x -= (maxX - minX);
+      if (flake.z < minZ) flake.z += (maxZ - minZ);
+      if (flake.z > maxZ) flake.z -= (maxZ - minZ);
+
+      // Reset to top if fallen below
+      if (flake.y < minY) {
+        flake.y = maxY;
+      }
+    }
+
+    // Add snowflakes to scene objects
+    const snowObjects: ObjectDef[] = snowflakes.map((flake) => ({
+      shape: {
+        type: ShapeType.SPHERE,
+        params: [snowParams.radius],
+        color: [1.0, 1.0, 1.0] as Vec3,
+      },
+      position: [flake.x, flake.y, flake.z] as Vec3,
+      group: SNOW_GROUP,
+    }));
+
+    const allObjects = [...frame.objects, ...snowObjects];
+    const extendedGroupDefs: GroupDef[] = [
+      ...sceneObj.groupDefs,
+      { blendMode: BlendMode.HARD }, // snow group
+    ];
+
+    const flatScene = compileScene(allObjects, extendedGroupDefs, sceneObj.config.smoothK);
     loadScene(wasm, flatScene);
 
-    // Use dialogue-controlled camera
+    // Calculate perlin noise camera jitter
+    const noiseX = pnoise1(noiseOffsetX + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
+    const noiseY = pnoise1(noiseOffsetY + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
+    const noiseZ = pnoise1(noiseOffsetZ + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
+
+    // Use dialogue-controlled camera with perlin noise jitter
     const camera = new Camera({
-      eye: [cameraState.x, cameraState.y, cameraState.z] as Vec3,
+      eye: [cameraState.x + noiseX, cameraState.y + noiseY, cameraState.z + noiseZ] as Vec3,
       at: config.camera.at,
       up: config.camera.up,
       fov: cameraState.fov,
