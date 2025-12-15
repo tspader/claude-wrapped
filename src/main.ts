@@ -17,6 +17,7 @@ import {
   StyledText,
   type TextChunk,
   brightYellow,
+  brightCyan,
 } from "@opentui/core";
 import { Camera, type Vec3, normalize, cross, sub } from "./camera";
 import { readFileSync } from "fs";
@@ -94,13 +95,11 @@ const nodes: DialogueNode[] = [
   {
     id: "start",
     type: "prompt",
-    text: text`Welcome.
+    text: text`This program grabs Claude Code usage stats, uploads to a database, and compare to other users across the world.
 
-This program will grab some Claude Code usage stats, upload them to a database, and show how you compare to other users across the world.
+The data is neither sensitive nor identifiable. It's just ${brightYellow("/stats")}.
 
-The data is neither sensitive nor identifiable in any way. We just use the stats that Claude uses when you run ${brightYellow("/stats")}.
-
-But, if you'd still rather not, you can quit the program now`,
+If you'd still rather not, you can quit the program now`,
     options: [
       { label: "Play", target: "upload-stats"},
       { label: "Quit", target: "quit"},
@@ -330,13 +329,17 @@ But, if you'd still rather not, you can quit the program now`,
 
 Did I spend far, far too much time writing an SDF raymarcher instead of making this a fun wrapped?
 
-Yeah, probably. But, damn it, this is the world we live in! A world where TUIs are worth a billion dollars, and text streams are the universal interface. A world with WebAssembly, and LLVM, and Bun, with HTML and CSS and Yoga and OpenTUI, and a world with Inigo Quilez, and Andrew Kelley, and jart, and Carmack, and Karpathy, and Jon, and Casey.`,
+Yeah, probably. But, damn it, this is the world we live in! A world where TUIs are worth a billion dollars, and text streams are the universal interface.
+
+A world with WebAssembly, and LLVM, and Bun, with HTML and CSS and Yoga and OpenTUI, and Zig, and unimaginable opportunity for making money by having fun with computers.
+
+I'm thankful for a world with Inigo Quilez! And Andrew Kelley, and jart, and Carmack, and Karpathy, and Jon, and Casey, and all the other folks who I've looked up to programming and have taught me so much.`,
     next: "epilogue_002"
   },
   {
     id: "epilogue_002",
     type: "text",
-    text: text`And, of course, a world with Fabrice Bellard. Fabrice, if this gets to you -- thanks. To you, and all named, and to many, many unnamed: Thank you!`,
+    text: text`And, of course, a world with Fabrice Bellard. Fabrice, if this gets to you -- thanks. You're the god damn man.`,
     next: "end"
   },
   {
@@ -597,9 +600,25 @@ async function main() {
     visible: false,
   });
 
+  const continueBox = new BoxRenderable(renderer, {
+    id: "continue-box",
+    width: "100%",
+    alignItems: "center",
+    marginTop: 2,
+    visible: false,
+  });
+
+  const continueText = new TextRenderable(renderer, {
+    id: "continue-text",
+    content: text`press ${brightCyan("space")} to continue`,
+  });
+
+  continueBox.add(continueText);
+
   dialogueBox.add(titleBox);
   dialogueBox.add(contentText);
   dialogueBox.add(optionsBox);
+  dialogueBox.add(continueBox);
   renderer.root.add(dialogueBox);
 
   // ==========================================================================
@@ -719,6 +738,9 @@ async function main() {
     currentText = text;
     currentIndex = index;
     typingFinished = finished;
+    if (index === 0 && !finished) {
+      contentText.scrollY = 0;
+    }
   };
 
   dialogue.onShowOptions = (opts) => {
@@ -803,10 +825,19 @@ async function main() {
 
     // Update content text
     const visibleText = sliceStyledText(currentText, currentIndex);
-    contentText.content = typingFinished ? visibleText : new StyledText([
-      ...visibleText.chunks,
-      { __isChunk: true, text: "█", attributes: 0, fg: RGBA.fromHex("#CCCCCC") } as TextChunk,
-    ]);
+    if (!typingFinished) {
+      contentText.content = new StyledText([
+        ...visibleText.chunks,
+        { __isChunk: true, text: "█", attributes: 0, fg: RGBA.fromHex("#CCCCCC") } as TextChunk,
+      ]);
+      continueBox.visible = false;
+    } else if (options.length === 0 && dialogue.phase === "waiting") {
+      contentText.content = visibleText;
+      continueBox.visible = true;
+    } else {
+      contentText.content = visibleText;
+      continueBox.visible = false;
+    }
 
     // Update 3D scene
     wasm.exports.compute_background(time);
