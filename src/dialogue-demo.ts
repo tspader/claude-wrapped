@@ -30,6 +30,8 @@ import {
   BlendMode,
   type ObjectDef,
   type GroupDef,
+  type LightingConfig,
+  type Vec3 as SceneVec3,
 } from "./scene";
 import { ActionQueue, easeOutCubic, easeInOutCubic } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
@@ -474,6 +476,19 @@ async function main() {
     pointLightIntensity: 0,
   };
 
+  // Static lighting config (dialogue-controlled, not from scene)
+  const lighting: LightingConfig = {
+    ambient: 0.0,
+    directional: {
+      direction: [0.5, 0.75, -0.25] as SceneVec3,
+      intensity: 1.0,
+    },
+  };
+
+  // Point light appearance (static)
+  const pointLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+  const pointLightRadius = 0.2;
+
   // ==========================================================================
   // Snow & Camera Noise State
   // ==========================================================================
@@ -697,8 +712,9 @@ async function main() {
     setupCamera(wasm, camera, sceneWidth, sceneHeight);
     wasm.exports.generate_rays(sceneWidth, sceneHeight);
 
-    // Directional light (like tpose)
-    wasm.exports.set_lighting(0.0, 0.5, 0.75, -0.25, 1.0);
+    // Directional light
+    const [dx, dy, dz] = lighting.directional.direction;
+    wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
 
     // Point lights from snowflakes (up to 64)
     const numPointLights = Math.min(snowflakes.length, 64);
@@ -707,11 +723,11 @@ async function main() {
       wasm.pointLightX[i] = flake.x;
       wasm.pointLightY[i] = flake.y;
       wasm.pointLightZ[i] = flake.z;
-      wasm.pointLightR[i] = 0.8;
-      wasm.pointLightG[i] = 0.9;
-      wasm.pointLightB[i] = 1.0;
+      wasm.pointLightR[i] = pointLightColor[0];
+      wasm.pointLightG[i] = pointLightColor[1];
+      wasm.pointLightB[i] = pointLightColor[2];
       wasm.pointLightIntensity[i] = cameraState.pointLightIntensity;
-      wasm.pointLightRadius[i] = 0.2;
+      wasm.pointLightRadius[i] = pointLightRadius;
     }
     wasm.exports.set_point_lights(numPointLights);
     wasm.exports.march_rays();
