@@ -1,6 +1,6 @@
 /**
- * Scripted scene - demonstrates the script executor system.
- * Claude with camera interpolations controlled by a script.
+ * Scripted scene - demonstrates the dialogue + action queue system.
+ * Claude with camera interpolations controlled by dialogue nodes.
  */
 
 import {
@@ -14,7 +14,9 @@ import {
   registerScene,
   getClaudeBoxes,
 } from "../scene";
-import { ScriptRunner, easeOutCubic, easeInOutCubic, type Script } from "../scene/script";
+import { ActionQueue, easeOutCubic, easeInOutCubic, type Script } from "../scene/script";
+import { DialogueExecutor, type DialogueNode } from "../scene/dialogue";
+import { t, green, cyan } from "@opentui/core";
 
 // =============================================================================
 // Config
@@ -46,34 +48,71 @@ const groupDefs: GroupDef[] = [
 ];
 
 // =============================================================================
-// Script Definition
+// Dialogue Nodes
 // =============================================================================
 
-const introScript: Script = [
-  // Start zoomed out, then zoom in
-  { type: "lerp", target: "camera.z", to: -3.0, duration: 2.0, easing: easeOutCubic },
-  { type: "wait", duration: 0.5 },
-  // Pan right while adjusting FOV
-  { type: "parallel", actions: [
-    { type: "lerp", target: "camera.x", to: 2.0, duration: 1.5, easing: easeInOutCubic },
-    { type: "lerp", target: "camera.fov", to: 35, duration: 1.5, easing: easeInOutCubic },
-  ]},
-  { type: "wait", duration: 0.5 },
-  // Pan back to center
-  { type: "lerp", target: "camera.x", to: 0.0, duration: 1.0, easing: easeOutCubic },
-  { type: "wait", duration: 0.5 },
-  // Orbit around (move camera in a quarter circle)
-  { type: "parallel", actions: [
-    { type: "lerp", target: "camera.x", to: 3.0, duration: 2.0, easing: easeInOutCubic },
-    { type: "lerp", target: "camera.z", to: 0.0, duration: 2.0, easing: easeInOutCubic },
-  ]},
-  { type: "wait", duration: 0.5 },
-  // Return to start
-  { type: "parallel", actions: [
-    { type: "lerp", target: "camera.x", to: 0.0, duration: 1.5, easing: easeOutCubic },
-    { type: "lerp", target: "camera.z", to: -3.0, duration: 1.5, easing: easeOutCubic },
-    { type: "lerp", target: "camera.fov", to: 25, duration: 1.5, easing: easeOutCubic },
-  ]},
+const nodes: DialogueNode[] = [
+  {
+    id: "start",
+    type: "script",
+    script: [
+      { type: "lerp", target: "camera.z", to: -3.0, duration: 2.0, easing: easeOutCubic },
+    ],
+    next: "welcome",
+  },
+  {
+    id: "welcome",
+    type: "text",
+    text: t`Welcome to the ${green("scripted")} scene demo.
+
+This combines dialogue with camera animations.`,
+    script: [
+      { type: "lerp", target: "camera.x", to: 1.0, duration: 1.5, easing: easeInOutCubic },
+    ],
+    next: "prompt",
+  },
+  {
+    id: "prompt",
+    type: "prompt",
+    text: t`Would you like to see more?`,
+    options: [
+      { label: "YES", target: "orbit" },
+      { label: "NO", target: "end" },
+    ],
+    next: "orbit",
+  },
+  {
+    id: "orbit",
+    type: "script",
+    script: [
+      { type: "lerp", target: "camera.x", to: 3.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "camera.z", to: 0.0, duration: 1.5, easing: easeInOutCubic },
+    ],
+    next: "orbited",
+  },
+  {
+    id: "orbited",
+    type: "text",
+    text: t`The camera just ${cyan("orbited")} around Claude.
+
+Press space to return to start.`,
+    next: "return",
+  },
+  {
+    id: "return",
+    type: "script",
+    script: [
+      { type: "lerp", target: "camera.x", to: 0.0, duration: 1.0, easing: easeOutCubic },
+      { type: "lerp", target: "camera.z", to: -3.0, duration: 1.0, easing: easeOutCubic },
+    ],
+    next: "end",
+  },
+  {
+    id: "end",
+    type: "text",
+    text: t`Demo complete. The scene will now idle.`,
+    next: "end", // Terminal
+  },
 ];
 
 // =============================================================================
@@ -85,27 +124,27 @@ interface SceneState {
   cameraY: number;
   cameraZ: number;
   cameraFov: number;
-  runner: ScriptRunner;
+  actionQueue: ActionQueue;
+  dialogue: DialogueExecutor;
 }
 
 let state: SceneState | null = null;
 
 function createState(): SceneState {
-  const s: SceneState = {
+  const s: Partial<SceneState> = {
     cameraX: config.camera.eye[0],
     cameraY: config.camera.eye[1],
     cameraZ: config.camera.eye[2],
     cameraFov: config.camera.fov,
-    runner: null!,
   };
 
-  // Getter/setter for script targets
+  // Getter/setter for action targets
   const getter = (target: string): number => {
     switch (target) {
-      case "camera.x": return s.cameraX;
-      case "camera.y": return s.cameraY;
-      case "camera.z": return s.cameraZ;
-      case "camera.fov": return s.cameraFov;
+      case "camera.x": return s.cameraX!;
+      case "camera.y": return s.cameraY!;
+      case "camera.z": return s.cameraZ!;
+      case "camera.fov": return s.cameraFov!;
       default: throw new Error(`Unknown target: ${target}`);
     }
   };
@@ -120,8 +159,23 @@ function createState(): SceneState {
     }
   };
 
-  s.runner = new ScriptRunner(introScript, getter, setter);
-  return s;
+  s.actionQueue = new ActionQueue(getter, setter);
+  s.dialogue = new DialogueExecutor(nodes, "start", s.actionQueue);
+
+  // Wire up dialogue callbacks (for demo, just log)
+  s.dialogue.onTextUpdate = (text, index, finished) => {
+    const plain = text.chunks.map(c => c.text).join("");
+    // In real use, this would update UI
+    if (finished) {
+      process.stderr.write(`[dialogue] ${plain}\n`);
+    }
+  };
+
+  s.dialogue.onShowOptions = (options) => {
+    process.stderr.write(`[options] ${options.map(o => o.label).join(" | ")}\n`);
+  };
+
+  return s as SceneState;
 }
 
 // =============================================================================
@@ -146,8 +200,11 @@ const scriptedScene: Scene = {
     const dt = t - lastT;
     lastT = t;
 
-    // Update script
-    state.runner.tick(dt);
+    // Update action queue (runs all interpolations)
+    state.actionQueue.tick(dt);
+
+    // Update dialogue (manages node transitions)
+    state.dialogue.tick(dt);
 
     // Claude at origin
     const objects: ObjectDef[] = getClaudeBoxes([0, 0, 0], 1.0, SceneGroups.CLAUDE);
@@ -165,15 +222,19 @@ const scriptedScene: Scene = {
 // Auto-register
 registerScene(scriptedScene);
 
-// Export for external skip control
-export function skipScript(): void {
-  state?.runner.skip();
+// Export for external control
+export function advanceDialogue(): void {
+  state?.dialogue.advance();
 }
 
-export function resetScript(): void {
-  state?.runner.reset();
+export function selectOption(index: number): void {
+  state?.dialogue.selectOption(index);
 }
 
-export function isScriptDone(): boolean {
-  return state?.runner.done ?? true;
+export function getDialoguePhase(): string {
+  return state?.dialogue.phase ?? "unknown";
+}
+
+export function isDialogueDone(): boolean {
+  return state?.dialogue.done ?? true;
 }

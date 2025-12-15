@@ -1,5 +1,8 @@
 /**
- * Script executor for chainable, skippable interpolations.
+ * Action queue system for timed, skippable actions.
+ * 
+ * Actions are pushed to a queue and processed each tick.
+ * When done, they're removed. Supports skip (instant complete).
  */
 
 export type EasingFn = (t: number) => number;
@@ -12,17 +15,16 @@ export const easeInOutQuad: EasingFn = (t) => t < 0.5 ? 2 * t * t : -1 + (4 - 2 
 export const easeOutCubic: EasingFn = (t) => (--t) * t * t + 1;
 export const easeInOutCubic: EasingFn = (t) => t < 0.5 ? 4 * t * t * t : (t - 1) * (2 * t - 2) * (2 * t - 2) + 1;
 
-// Action types
-export type Action =
+// Action definitions (what gets pushed)
+export type ActionDef =
   | { type: "lerp"; target: string; to: number; duration: number; easing?: EasingFn }
   | { type: "set"; target: string; value: number }
-  | { type: "wait"; duration: number }
-  | { type: "parallel"; actions: Action[] };
+  | { type: "wait"; duration: number };
 
-export type Script = Action[];
-
-// Active interpolation state
+// Active action state (internal)
 interface ActiveLerp {
+  id: number;
+  type: "lerp";
   target: string;
   from: number;
   to: number;
@@ -31,180 +33,159 @@ interface ActiveLerp {
   easing: EasingFn;
 }
 
-// Active wait state
 interface ActiveWait {
+  id: number;
+  type: "wait";
   duration: number;
   elapsed: number;
 }
 
-type ActiveAction =
-  | { type: "lerp"; lerp: ActiveLerp }
-  | { type: "wait"; wait: ActiveWait }
-  | { type: "parallel"; children: ActiveAction[] };
+type ActiveAction = ActiveLerp | ActiveWait;
 
 /**
- * ScriptRunner executes a script with skippable interpolations.
+ * ActionQueue processes timed actions independently.
  * 
  * Usage:
- *   const runner = new ScriptRunner(script, getter, setter);
+ *   const queue = new ActionQueue(getter, setter);
+ *   const id = queue.push({ type: "lerp", target: "camera.x", to: 5, duration: 1 });
  *   // Each frame:
- *   runner.tick(dt);
- *   // On skip (space):
- *   runner.skip();
+ *   queue.tick(dt);
+ *   // Check if specific action is done:
+ *   queue.isDone(id);
+ *   // Skip specific action:
+ *   queue.skip(id);
+ *   // Skip all:
+ *   queue.skipAll();
  */
-export class ScriptRunner {
-  private script: Script;
-  private current: number = 0;
-  private active: ActiveAction | null = null;
+export class ActionQueue {
+  private actions: ActiveAction[] = [];
+  private nextId: number = 1;
   private getter: (target: string) => number;
   private setter: (target: string, value: number) => void;
 
   constructor(
-    script: Script,
     getter: (target: string) => number,
     setter: (target: string, value: number) => void
   ) {
-    this.script = script;
     this.getter = getter;
     this.setter = setter;
   }
 
-  /** Check if script is complete */
-  get done(): boolean {
-    return this.current >= this.script.length && this.active === null;
-  }
+  /** Push an action, returns its ID */
+  push(def: ActionDef): number {
+    const id = this.nextId++;
 
-  /** Skip current action - instantly complete all active interpolations */
-  skip(): void {
-    if (this.active) {
-      this.completeAction(this.active);
-      this.active = null;
+    switch (def.type) {
+      case "lerp":
+        this.actions.push({
+          id,
+          type: "lerp",
+          target: def.target,
+          from: this.getter(def.target),
+          to: def.to,
+          duration: def.duration,
+          elapsed: 0,
+          easing: def.easing ?? easeLinear,
+        });
+        break;
+
+      case "set":
+        // Instant - apply immediately, no need to track
+        this.setter(def.target, def.value);
+        // Return id but it's immediately "done"
+        return id;
+
+      case "wait":
+        this.actions.push({
+          id,
+          type: "wait",
+          duration: def.duration,
+          elapsed: 0,
+        });
+        break;
     }
-    this.current++;
-    this.startNext();
+
+    return id;
   }
 
-  /** Update - call each frame with delta time in seconds */
+  /** Check if a specific action is done (or never existed) */
+  isDone(id: number): boolean {
+    return !this.actions.some(a => a.id === id);
+  }
+
+  /** Check if all actions are done */
+  get empty(): boolean {
+    return this.actions.length === 0;
+  }
+
+  /** Skip a specific action (instant complete) */
+  skip(id: number): void {
+    const idx = this.actions.findIndex(a => a.id === id);
+    if (idx === -1) return;
+
+    const action = this.actions[idx]!;
+    this.completeAction(action);
+    this.actions.splice(idx, 1);
+  }
+
+  /** Skip all actions */
+  skipAll(): void {
+    for (const action of this.actions) {
+      this.completeAction(action);
+    }
+    this.actions.length = 0;
+  }
+
+  /** Update all actions, call each frame with delta time in seconds */
   tick(dt: number): void {
-    if (this.active === null) {
-      this.startNext();
-    }
-
-    if (this.active) {
-      const done = this.updateAction(this.active, dt);
+    // Process in reverse so we can safely remove
+    for (let i = this.actions.length - 1; i >= 0; i--) {
+      const action = this.actions[i]!;
+      const done = this.updateAction(action, dt);
       if (done) {
-        this.active = null;
-        this.current++;
-        this.startNext();
+        this.actions.splice(i, 1);
       }
     }
   }
 
-  /** Reset to beginning */
-  reset(): void {
-    if (this.active) {
-      this.completeAction(this.active);
-    }
-    this.current = 0;
-    this.active = null;
+  /** Clear all actions without completing them */
+  clear(): void {
+    this.actions.length = 0;
   }
 
-  // Start the next action in the script
-  private startNext(): void {
-    if (this.current >= this.script.length) return;
-
-    const action = this.script[this.current]!;
-    this.active = this.initAction(action);
-
-    // For instant actions (set), complete immediately and continue
-    if (action.type === "set") {
-      this.active = null;
-      this.current++;
-      this.startNext();
-    }
-  }
-
-  // Initialize an action into active state
-  private initAction(action: Action): ActiveAction {
+  private updateAction(action: ActiveAction, dt: number): boolean {
     switch (action.type) {
-      case "lerp":
-        return {
-          type: "lerp",
-          lerp: {
-            target: action.target,
-            from: this.getter(action.target),
-            to: action.to,
-            duration: action.duration,
-            elapsed: 0,
-            easing: action.easing ?? easeLinear,
-          },
-        };
-
-      case "set":
-        this.setter(action.target, action.value);
-        // Return a dummy that's immediately complete
-        return { type: "wait", wait: { duration: 0, elapsed: 0 } };
-
-      case "wait":
-        return {
-          type: "wait",
-          wait: { duration: action.duration, elapsed: 0 },
-        };
-
-      case "parallel":
-        return {
-          type: "parallel",
-          children: action.actions.map((a) => this.initAction(a)),
-        };
-    }
-  }
-
-  // Update an active action, returns true if complete
-  private updateAction(active: ActiveAction, dt: number): boolean {
-    switch (active.type) {
       case "lerp": {
-        const { lerp } = active;
-        lerp.elapsed += dt;
-        const t = Math.min(lerp.elapsed / lerp.duration, 1);
-        const eased = lerp.easing(t);
-        const value = lerp.from + (lerp.to - lerp.from) * eased;
-        this.setter(lerp.target, value);
+        action.elapsed += dt;
+        const t = Math.min(action.elapsed / action.duration, 1);
+        const eased = action.easing(t);
+        const value = action.from + (action.to - action.from) * eased;
+        this.setter(action.target, value);
         return t >= 1;
       }
 
       case "wait": {
-        const { wait } = active;
-        wait.elapsed += dt;
-        return wait.elapsed >= wait.duration;
-      }
-
-      case "parallel": {
-        let allDone = true;
-        for (const child of active.children) {
-          const done = this.updateAction(child, dt);
-          if (!done) allDone = false;
-        }
-        return allDone;
+        action.elapsed += dt;
+        return action.elapsed >= action.duration;
       }
     }
   }
 
-  // Instantly complete an action (for skip)
-  private completeAction(active: ActiveAction): void {
-    switch (active.type) {
+  private completeAction(action: ActiveAction): void {
+    switch (action.type) {
       case "lerp":
-        this.setter(active.lerp.target, active.lerp.to);
+        this.setter(action.target, action.to);
         break;
-
       case "wait":
         // Nothing to do
-        break;
-
-      case "parallel":
-        for (const child of active.children) {
-          this.completeAction(child);
-        }
         break;
     }
   }
 }
+
+// =============================================================================
+// Script types for dialogue system
+// =============================================================================
+
+/** A script is a sequence of action definitions */
+export type Script = ActionDef[];
