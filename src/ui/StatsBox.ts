@@ -116,7 +116,6 @@ export class StatsBox {
       flexDirection: "column",
     });
 
-    // Centered logo container for logo slide
     this.logoContainer = new BoxRenderable(renderer, {
       id: "logo-container",
       width: innerWidth,
@@ -127,16 +126,14 @@ export class StatsBox {
       visible: true,
     });
 
-
-    // "press space to continue" prompt - italic, with "space" in bright green
-
     this.logoContainer.add(new TextRenderable(renderer, {
       id: "logo-text",
       content: this.buildLogo(),
       fg: "#FFFFFF",
+      marginBottom: 1
     }));
 
-    this.logoContainer.add(new TextRenderable(renderer, { content: "\n\n" }));
+    //this.logoContainer.add(new TextRenderable(renderer, { content: "\n" }));
     this.logoContainer.add(new TextRenderable(renderer, {
       id: "logo-prompt",
       content: t`${italic("press ")}${italic(brightCyan("space"))}${italic(" to continue")}`,
@@ -144,7 +141,6 @@ export class StatsBox {
     }));
 
 
-    // Normal content container (title + content)
     this.normalContent = new BoxRenderable(renderer, {
       id: "normal-content",
       flexDirection: "column",
@@ -155,6 +151,7 @@ export class StatsBox {
       id: "title-text",
       content: this.buildTitle(),
       fg: "#FFFFFF",
+      marginBottom: 1
     });
 
     this.contentText = new TextRenderable(renderer, {
@@ -164,7 +161,6 @@ export class StatsBox {
     });
 
     this.normalContent.add(this.titleText);
-    this.normalContent.add(new TextRenderable(renderer, { content: "\n" }));
     this.normalContent.add(this.contentText);
 
     this.container.add(this.logoContainer);
