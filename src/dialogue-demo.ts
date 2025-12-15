@@ -161,6 +161,15 @@ But, if you'd still rather not, you can quit the program now`,
         ctx.advance();
       }
     },
+    next: "lights-on",
+  },
+
+  {
+    id: "lights-on",
+    type: "script",
+    script: [
+      { type: "lerp", target: "pointLightIntensity", to: 3.0, duration: 3.0, easing: easeInOutCubic },
+    ],
     next: "move-top-left",
   },
 
@@ -462,6 +471,7 @@ async function main() {
     y: config.camera.eye[1],
     z: config.camera.eye[2],
     fov: config.camera.fov,
+    pointLightIntensity: 0,
   };
 
   // ==========================================================================
@@ -506,6 +516,7 @@ async function main() {
         case "camera.y": return cameraState.y;
         case "camera.z": return cameraState.z;
         case "camera.fov": return cameraState.fov;
+        case "pointLightIntensity": return cameraState.pointLightIntensity;
         default: return 0;
       }
     },
@@ -515,6 +526,7 @@ async function main() {
         case "camera.y": cameraState.y = value; break;
         case "camera.z": cameraState.z = value; break;
         case "camera.fov": cameraState.fov = value; break;
+        case "pointLightIntensity": cameraState.pointLightIntensity = value; break;
       }
     }
   );
@@ -685,10 +697,23 @@ async function main() {
     setupCamera(wasm, camera, sceneWidth, sceneHeight);
     wasm.exports.generate_rays(sceneWidth, sceneHeight);
 
-    const lighting = frame.lighting ?? sceneObj.config.lighting;
-    const [dx, dy, dz] = lighting.directional.direction;
-    wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
-    wasm.exports.set_point_lights(0);
+    // Directional light (like tpose)
+    wasm.exports.set_lighting(0.0, 0.5, 0.75, -0.25, 1.0);
+
+    // Point lights from snowflakes (up to 64)
+    const numPointLights = Math.min(snowflakes.length, 64);
+    for (let i = 0; i < numPointLights; i++) {
+      const flake = snowflakes[i]!;
+      wasm.pointLightX[i] = flake.x;
+      wasm.pointLightY[i] = flake.y;
+      wasm.pointLightZ[i] = flake.z;
+      wasm.pointLightR[i] = 0.8;
+      wasm.pointLightG[i] = 0.9;
+      wasm.pointLightB[i] = 1.0;
+      wasm.pointLightIntensity[i] = cameraState.pointLightIntensity;
+      wasm.pointLightRadius[i] = 0.2;
+    }
+    wasm.exports.set_point_lights(numPointLights);
     wasm.exports.march_rays();
     wasm.exports.composite(sceneWidth, sceneHeight);
 
