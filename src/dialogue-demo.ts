@@ -34,6 +34,7 @@ import {
 import { ActionQueue, easeOutCubic, easeInOutCubic } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
 import { seededRandom, createNoiseGenerator } from "./scene/utils";
+import { checkStatsExistence, readStatsCache, postStatsToApi, invokeClaudeStats } from "./utils/stats";
 
 // Register scene (side effect)
 import "./scenes/scripted";
@@ -85,16 +86,84 @@ The data is neither sensitive nor identifiable in any way. We just use the stats
 
 But, if you'd still rather not, you can quit the program now`,
     options: [
-      { label: "Play", target: "move-top-left"},
+      { label: "Play", target: "upload-stats"},
       { label: "Quit", target: "quit"},
     ],
-    next: "move-top-left"
+    next: "upload-stats"
   },
   {
     id: "quit",
     type: "exit",
     code: 0,
   },
+  {
+    id: "upload-stats",
+    type: "action",
+    text: text`Fetching stats from Claude...`,
+    onEnter: async (ctx) => {
+      const signal = ctx.abortSignal;
+      const delay = (ms: number) => new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(resolve, ms);
+        signal.addEventListener("abort", () => {
+          clearTimeout(timeout);
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+
+      try {
+        ctx.setStatus(text`Running ${brightYellow("claude /stats")}...`);
+        await delay(500);
+        await invokeClaudeStats();
+
+        if (!checkStatsExistence()) {
+          throw new Error("Stats file not generated.");
+        }
+
+        ctx.setStatus(text`Reading local stats...`);
+        const stats = readStatsCache();
+
+        ctx.setStatus(text`Posting to backend...`);
+
+        // Retry with exponential backoff: 1s, 4s, 16s, 64s
+        const delays = [1, 4, 16, 64];
+        let lastError: Error | null = null;
+
+        for (let attempt = 0; attempt <= delays.length; attempt++) {
+          if (signal.aborted) return;
+          try {
+            const response = await postStatsToApi(stats);
+            ctx.setData("entry", response.entry);
+            ctx.setData("global", response.global);
+            ctx.setData("stats", stats);
+            ctx.setStatus(text`${fg("#66FF66")("Upload complete!")}`);
+            await delay(500);
+            ctx.advance();
+            return;
+          } catch (e: any) {
+            lastError = e;
+            if (attempt < delays.length) {
+              const delaySeconds = delays[attempt]!;
+              for (let remaining = delaySeconds; remaining >= 0; remaining--) {
+                if (signal.aborted) return;
+                ctx.setStatus(text`Failed to upload. Retry ${fg("#FFFF66")(`${attempt + 1}/${delays.length}`)} in ${fg("#FFFF66")(String(remaining))}s...`);
+                await delay(1000);
+              }
+            }
+          }
+        }
+
+        throw lastError || new Error("Failed to post stats after retries");
+      } catch (err: any) {
+        if (err.name === "AbortError") return;
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.setStatus(text`${fg("#FF6666")("Error:")} ${msg}`);
+        await delay(2000);
+        ctx.advance();
+      }
+    },
+    next: "move-top-left",
+  },
+
   {
     id: "move-top-left",
     type: "script",
@@ -353,11 +422,19 @@ async function main() {
     flexDirection: "column",
   });
 
-  const titleText = new TextRenderable(renderer, {
-    id: "title",
-    content: text`${bold(fg(CLAUDE_COLOR)("DIALOGUE"))} ${bold("DEMO")}`,
+  const titleBox = new BoxRenderable(renderer, {
+    id: "title-box",
+    width: "100%",
+    alignItems: "center",
     marginBottom: 1,
   });
+
+  const titleText = new TextRenderable(renderer, {
+    id: "title",
+    content: text`${bold(fg(CLAUDE_COLOR)("CLAUDE"))} ${bold("WRAPPED")}`,
+  });
+
+  titleBox.add(titleText);
 
   const contentText = new TextRenderable(renderer, {
     id: "content",
@@ -371,7 +448,7 @@ async function main() {
     visible: false,
   });
 
-  dialogueBox.add(titleText);
+  dialogueBox.add(titleBox);
   dialogueBox.add(contentText);
   dialogueBox.add(optionsBox);
   renderer.root.add(dialogueBox);

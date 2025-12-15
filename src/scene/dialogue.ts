@@ -280,7 +280,7 @@ export class DialogueExecutor {
     }
 
     this.state.typingTimer += dt * 1000; // convert to ms
-    const baseDelay = 35;
+    const baseDelay = 20;
 
     if (this.state.typingTimer >= baseDelay) {
       this.state.typingTimer = 0;
@@ -290,7 +290,7 @@ export class DialogueExecutor {
       if (this.state.typingIndex < plainText.length) {
         const char = plainText[this.state.typingIndex - 1];
         if (char === "." || char === "?" || char === "!") {
-          this.state.typingTimer = -250;
+          this.state.typingTimer = -200;
         } else if (char === ",") {
           this.state.typingTimer = -80;
         } else if (char === "\n") {
