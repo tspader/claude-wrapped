@@ -40,6 +40,7 @@ import { checkStatsExistence, readStatsCache, postStatsToApi, invokeClaudeStats 
 
 // Register scene (side effect)
 import "./scenes/scripted";
+import { dir } from "console";
 
 // =============================================================================
 // Snow Config
@@ -179,7 +180,7 @@ But, if you'd still rather not, you can quit the program now`,
     type: "script",
     script: [
       { type: "lerp", target: "light.y", to: 0.8, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "light.z", to: 0.3, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "light.z", to: -0.3, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "snowLightIntensity", to: 2.0, duration: 1.5, easing: easeInQuad },
     ],
     next: "move-top-left",
@@ -189,6 +190,7 @@ But, if you'd still rather not, you can quit the program now`,
     id: "move-top-left",
     type: "script",
     script: [
+      { type: "lerp", target: "directionalIntensity", to: 0.1, duration: 1.0, easing: easeInOutCubic },
       { type: "lerp", target: "camera.x", to: -2.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.y", to: 1.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.z", to: -2.0, duration: 1.5, easing: easeInOutCubic },
@@ -530,11 +532,12 @@ async function main() {
   };
 
   // Static lighting config
+  let directionalIntensity = 1.0
   const lighting: LightingConfig = {
     ambient: 0.0,
     directional: {
-      direction: [0.5, 0.75, -0.25] as SceneVec3,
-      intensity: 1.0,
+      direction: [0.5, 0.75, -1.0] as SceneVec3,
+      intensity: directionalIntensity,
     },
   };
 
@@ -601,6 +604,7 @@ async function main() {
         case "light.z": return dramaticLight.z;
         case "light.intensity": return dramaticLight.intensity;
         case "snowLightIntensity": return snowLightIntensity;
+        case "directionalIntensity": return directionalIntensity;
         default: return 0;
       }
     },
@@ -615,6 +619,7 @@ async function main() {
         case "light.z": dramaticLight.z = value; break;
         case "light.intensity": dramaticLight.intensity = value; break;
         case "snowLightIntensity": snowLightIntensity = value; break;
+        case "directionalIntensity": directionalIntensity = value; break;
       }
     }
   );
@@ -787,7 +792,7 @@ async function main() {
 
     // Directional light
     const [dx, dy, dz] = lighting.directional.direction;
-    wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
+    wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, directionalIntensity);
 
     // Dramatic point light (index 0)
     wasm.pointLightX[0] = dramaticLight.x;
