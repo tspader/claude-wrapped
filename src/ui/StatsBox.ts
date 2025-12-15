@@ -341,11 +341,6 @@ export class StatsBox {
       content = concatStyledText(...optionParts);
     }
 
-    // Add debug stats when on "done" slide
-    if (slide.id === "done" && this.debugStats) {
-      content = concatStyledText(content, plainChunk("\n" + this.debugStats));
-    }
-
     // Blinking cursor (hide on prompt slides after typing finishes)
     const hidePromptCursor = slide.type === "prompt" && this.typingFinished;
     if (this.showCursor && !hidePromptCursor) {

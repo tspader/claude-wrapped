@@ -26,9 +26,16 @@ export const SLIDES: Slide[] = [
   {
     id: "intro",
     type: "prompt",
-    getText: () => t`Welcome to Claude Wrapped.
-
-Would you like to analyze your
+    getText: () => t`Welcome to Claude Wrapped.`,
+    options: [
+      { label: "YES", value: "yes", style: green },
+      { label: "NO", value: "no", style: red },
+    ]
+  },
+  {
+    id: "foobar",
+    type: "prompt",
+    getText: () => t`Would you like to analyze your
 local Claude stats?
 
 This will run: ${cyan("claude --print \"/stats\"")}
@@ -88,8 +95,8 @@ Some were deeply complex.`;
         const usage = d.modelUsage || {};
         const models = Object.keys(usage);
         const fav = models.sort((a, b) => (usage[b].inputTokens || 0) - (usage[a].inputTokens || 0))[0] || "None";
-        const shortFav = fav.split('-').slice(0, 3).join('-'); 
-        
+        const shortFav = fav.split('-').slice(0, 3).join('-');
+
         if (models.length > 5) {
             return t`You explored ${yellow(models.length)} different models.
 
@@ -98,7 +105,7 @@ ${green(shortFav)}
 
 You really like experimenting!`;
         }
-        
+
         return t`You explored ${yellow(models.length)} different models.
 
 Your favorite was:
@@ -115,7 +122,7 @@ ${green(shortFav)}`;
         let morning = 0;
         let afternoon = 0;
         let evening = 0;
-        
+
         for (let h = 0; h < 24; h++) {
             const c = hours[h] || 0;
             if (h >= 5 && h < 12) morning += c;
@@ -123,7 +130,7 @@ ${green(shortFav)}`;
             else if (h >= 18 && h < 22) evening += c;
             else night += c;
         }
-        
+
         let type = "balanced user";
         let max = Math.max(night, morning, afternoon, evening);
         if (max === night) type = "Night Owl";
@@ -159,7 +166,7 @@ stats to the global leaderboard?`,
            const host = hostname();
            const rawId = `${user}@${host}`;
            const machineId = btoa(rawId).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_").slice(0, 128);
-           
+
            const stats = box.getStatsData();
            const response = await fetch("http://localhost:8787/stats", {
              method: "POST",
@@ -169,9 +176,9 @@ stats to the global leaderboard?`,
                stats: stats
              })
            });
-    
+
            if (!response.ok) throw new Error(response.statusText);
-           
+
            stats.uploadSuccess = true;
            box.setStatsData(stats);
          } catch (e: any) {
