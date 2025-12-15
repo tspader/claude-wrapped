@@ -7,6 +7,8 @@ import { ShapeType, type Vec3, type ObjectDef } from "../types";
 export const CLAUDE_COLOR: Vec3 = [0.85, 0.45, 0.35];
 export const SANTA_RED: Vec3 = [0.8, 0.1, 0.1];
 export const SANTA_WHITE: Vec3 = [0.85, 0.85, 0.85];
+export const EYE_BLACK: Vec3 = [0.05, 0.05, 0.05];
+//export const EYE_BLACK: Vec3 = [0.05, 1.00, 0.05];
 
 /**
  * Returns Claude logo as 6 box ObjectDefs (body, 1 arm bar, 4 legs).
@@ -38,6 +40,12 @@ export function getClaudeBoxes(
   const legY = -bodyH / 2 - legH / 2 + 0.04 * scale;
   const legSpacing = 0.14 * scale; // gap between legs in a pair
   const legX = bodyW / 2 - 0.12 * scale; // align with body edges
+
+  const eyeSizeX = 0.10 * scale;
+  const eyeSizeY = eyeSizeX / 2;
+  const eyeSizeZ = eyeSizeX / 2;
+  const eyeX = bodyW / 1.66;
+  const eyeY = armH / 2;
 
   return [
     // Body
@@ -93,6 +101,19 @@ export function getClaudeBoxes(
     {
       shape: { type: ShapeType.SPHERE, params: [0.08 * scale], color: SANTA_WHITE },
       position: [px, py + bodyH / 2 + 0.60 * scale, pz],
+      group,
+    },
+    // === EYES ===
+    // Left eye (small black square)
+    {
+      shape: { type: ShapeType.BOX, params: [eyeSizeX, eyeSizeY, eyeSizeZ], color: EYE_BLACK },
+      position: [px - eyeX, py + eyeY, pz - bodyD / 2 - eyeSizeX],
+      group,
+    },
+    // Right eye (small black square)
+    {
+      shape: { type: ShapeType.BOX, params: [eyeSizeX, eyeSizeY, eyeSizeZ], color: EYE_BLACK },
+      position: [px + eyeX, py + eyeY, pz - bodyD / 2 - eyeSizeX],
       group,
     },
   ];

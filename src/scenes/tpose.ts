@@ -45,7 +45,7 @@ const config: SceneConfig = {
 // Scene params
 const sceneParams = {
   seed: 123,
-  rotationSpeed: 0.5,
+  rotationSpeed: 2.5,
   floatSpeed: 0.3,
   floatAmount: 0.05,
 };
