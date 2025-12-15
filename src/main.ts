@@ -27,6 +27,7 @@ import {
 // Register all scenes (side effect: adds to registry)
 import "./scenes/slingshot";
 import "./scenes/tpose";
+import "./scenes/scripted";
 
 // =============================================================================
 // WASM Module Interface
