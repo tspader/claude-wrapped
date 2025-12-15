@@ -22,6 +22,9 @@ import { seededRandom, createNoiseGenerator } from "../scene/utils";
 // Config
 // =============================================================================
 
+////////////
+// CONFIG //
+////////////
 const cameraDistance = 3.0;
 const cameraHeight = 1.0;
 
@@ -42,7 +45,21 @@ const config: SceneConfig = {
   smoothK: 0.3,
 };
 
-// Scene params
+const snowParams = {
+  count: 30,
+  radius: 0.05,
+  baseSpeed: 0.3,
+  speedJitter: 0.1,
+  driftStrength: 0.6,
+  // world space bounds
+  minX: -1.5,
+  maxX: 1.5,
+  minY: -1.0,
+  maxY: 1.5,
+  minZ: -1.5,
+  maxZ: 0.5,
+};
+
 const sceneParams = {
   seed: 123,
   rotationSpeed: 0.5,
@@ -50,44 +67,39 @@ const sceneParams = {
   floatAmount: 0.05,
 };
 
-// =============================================================================
-// Groups
-// =============================================================================
-
+////////////
+// GROUPS //
+////////////
 const SceneGroups = {
   CLAUDE: 0,
   SNOW: 1,
 } as const;
 
 const groupDefs: GroupDef[] = [
-  { blendMode: BlendMode.HARD }, // CLAUDE - hard union for distinct limbs
-  { blendMode: BlendMode.HARD }, // SNOW - distinct snowflakes
+  { blendMode: BlendMode.HARD }, // claude
+  { blendMode: BlendMode.HARD }, // snow
 ];
 
-// =============================================================================
-// Snow Config
-// =============================================================================
-
-const snowParams = {
-  count: 30,
-  radius: 0.05,
-  // World-space bounds for snowfall (smaller to stay in view)
-  minX: -1.5,
-  maxX: 1.5,
-  minY: -1.0,
-  maxY: 1.5,
-  minZ: -1.5,
-  maxZ: 0.5,
-  // Speed
-  baseSpeed: 0.3,
-  speedJitter: 0.1,
-  driftStrength: 0.6,
+////////////
+// EXPORT //
+////////////
+const tposeScene: Scene = {
+  name: "tpose",
+  config,
+  groupDefs,
+  init() {
+    state = initState();
+  },
+  update,
 };
 
-// =============================================================================
-// State
-// =============================================================================
+// Auto-register
+registerScene(tposeScene);
 
+
+///////////
+// STATE //
+///////////
 interface Snowflake {
   x: number;
   y: number;
@@ -112,7 +124,6 @@ function initState(): SceneState {
   const rng = seededRandom(sceneParams.seed);
   const pnoise1 = createNoiseGenerator(rng);
 
-  // Initialize snowflakes
   const snowflakes: Snowflake[] = [];
   const { count, minX, maxX, minY, maxY, minZ, maxZ, baseSpeed, speedJitter, driftStrength } = snowParams;
 
@@ -137,10 +148,9 @@ function initState(): SceneState {
   };
 }
 
-// =============================================================================
-// Scene Implementation
-// =============================================================================
-
+////////////
+// UPDATE //
+////////////
 function update(t: number): SceneFrame {
   if (!state) throw new Error("Scene not initialized");
 
@@ -217,7 +227,7 @@ function update(t: number): SceneFrame {
         {
           position: [lightX + floatX, lightY + floatY, lightZ + floatZ] as Vec3,
           color: [1.0, 0.9, 0.7] as Vec3,  // warm white
-          intensity: 1.0,   // increased
+          intensity: 1.5,   // increased
           radius: 1.5,      // tighter falloff for more visible gradient
         },
       ],
@@ -230,19 +240,3 @@ function update(t: number): SceneFrame {
   };
 }
 
-// =============================================================================
-// Export
-// =============================================================================
-
-const tposeScene: Scene = {
-  name: "tpose",
-  config,
-  groupDefs,
-  init() {
-    state = initState();
-  },
-  update,
-};
-
-// Auto-register
-registerScene(tposeScene);
