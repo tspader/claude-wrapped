@@ -114,7 +114,6 @@ But, if you'd still rather not, you can quit the program now`,
 
       try {
         ctx.setStatus(text`Running ${brightYellow("claude /stats")}...`);
-        await delay(500);
         await invokeClaudeStats();
 
         if (!checkStatsExistence()) {
@@ -170,7 +169,7 @@ But, if you'd still rather not, you can quit the program now`,
     id: "lights-on",
     type: "script",
     script: [
-      { type: "lerp", target: "pointLightIntensity", to: 3.0, duration: 3.0, easing: easeInOutCubic },
+      { type: "lerp", target: "pointLightIntensity", to: 3.0, duration: 2.0, easing: easeInOutCubic },
     ],
     next: "move-top-left",
   },
@@ -476,16 +475,14 @@ async function main() {
     pointLightIntensity: 0,
   };
 
-  // Static lighting config (dialogue-controlled, not from scene)
   const lighting: LightingConfig = {
     ambient: 0.0,
     directional: {
-      direction: [0.5, 0.75, -0.25] as SceneVec3,
+      direction: [0.5, 0.75, -1.0] as SceneVec3,
       intensity: 1.0,
     },
   };
 
-  // Point light appearance (static)
   const pointLightColor: SceneVec3 = [0.8, 0.9, 1.0];
   const pointLightRadius = 0.2;
 
