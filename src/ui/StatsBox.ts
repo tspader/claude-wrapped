@@ -95,10 +95,8 @@ export class StatsBox {
 
   constructor(renderer: any, width: number, height: number, left: number, top: number) {
     this.renderer = renderer;
-    // Account for border (2) and padding (2) on each side
-    const innerWidth = width - 4;
-    const innerHeight = height - 4;
-    this.useLogo = innerWidth >= LOGO_WIDTH;
+    // Check if we have room for ASCII art logo (border=1, padding=1 on each side = 4 total)
+    this.useLogo = (width - 4) >= LOGO_WIDTH;
 
     this.container = new BoxRenderable(renderer, {
       id: "stats-box",
@@ -115,22 +113,31 @@ export class StatsBox {
       flexDirection: "column",
     });
 
-    // logo
+    // logo - flexGrow fills available space, centering handled by justify/align
     this.logoContainer = new BoxRenderable(renderer, {
       id: "logo-container",
-      width: innerWidth,
-      height: innerHeight,
+      flexGrow: 1,
       justifyContent: "center",
       alignItems: "center",
       flexDirection: "column",
       visible: true,
     });
 
+    // Build logo as separate TextRenderables with margin instead of newlines
+    const { claudeLogo, wrappedLogo } = this.buildLogoParts();
+
     this.logoContainer.add(new TextRenderable(renderer, {
-      id: "logo-text",
-      content: this.buildLogo(),
+      id: "logo-claude",
+      content: claudeLogo,
       fg: "#FFFFFF",
-      marginBottom: 1
+      marginBottom: 1,
+    }));
+
+    this.logoContainer.add(new TextRenderable(renderer, {
+      id: "logo-wrapped",
+      content: wrappedLogo,
+      fg: "#FFFFFF",
+      marginBottom: 2,
     }));
 
     this.logoContainer.add(new TextRenderable(renderer, {
@@ -147,10 +154,9 @@ export class StatsBox {
       visible: false,
     });
 
-    // title
+    // title - stretches to full width in column flex, justify centers content
     this.titleContainer = new BoxRenderable(renderer, {
       id: "title-container",
-      width: innerWidth,
       justifyContent: "center",
       flexDirection: "row",
       marginBottom: 1,
@@ -188,30 +194,37 @@ export class StatsBox {
     this.goToSlide(START_SLIDE);
   }
 
-  private buildLogo(): StyledText {
+  private buildLogoParts(): { claudeLogo: StyledText; wrappedLogo: StyledText } {
     const claudeStyle = fg(CLAUDE_COLOR);
     const wrappedStyle = fg(WRAPPED_COLOR);
 
     if (this.useLogo) {
-      const parts: TextChunk[] = [];
-
+      // Build CLAUDE logo
+      const claudeParts: TextChunk[] = [];
       for (let i = 0; i < CLAUDE_LOGO.length; i++) {
         const line = CLAUDE_LOGO[i]!;
-        if (i > 0) parts.push(plainChunk("\n"));
-        parts.push(claudeStyle(line));
+        if (i > 0) claudeParts.push(plainChunk("\n"));
+        claudeParts.push(claudeStyle(line));
       }
 
-      parts.push(plainChunk("\n"));
-
+      // Build WRAPPED logo
+      const wrappedParts: TextChunk[] = [];
       for (let i = 0; i < WRAPPED_LOGO.length; i++) {
         const line = WRAPPED_LOGO[i]!;
-        if (i > 0) parts.push(plainChunk("\n"));
-        parts.push(wrappedStyle(line));
+        if (i > 0) wrappedParts.push(plainChunk("\n"));
+        wrappedParts.push(wrappedStyle(line));
       }
 
-      return concatStyledText(...parts);
+      return {
+        claudeLogo: concatStyledText(...claudeParts),
+        wrappedLogo: concatStyledText(...wrappedParts),
+      };
     } else {
-      return t`${claudeStyle("CLAUDE")} ${wrappedStyle("WRAPPED")}`;
+      // Fallback: simple text
+      return {
+        claudeLogo: t`${claudeStyle("CLAUDE")}`,
+        wrappedLogo: t`${wrappedStyle("WRAPPED")}`,
+      };
     }
   }
 
