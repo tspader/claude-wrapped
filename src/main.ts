@@ -1036,6 +1036,7 @@ async function main(): Promise<void> {
     if (s === '\u001b[D' || s === 'h') await statsBox.handleInput('ArrowLeft');
     if (s === '\u001b[C' || s === 'l') await statsBox.handleInput('ArrowRight');
     if (s === '\r' || s === '\n') await statsBox.handleInput('Enter');
+    if (s === ' ') await statsBox.handleInput(' ');
   });
 
   // Frame timing tracking

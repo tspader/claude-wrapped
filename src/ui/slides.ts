@@ -15,11 +15,17 @@ export interface Slide {
 }
 
 export const SLIDES: Slide[] = [
-  // 0. Intro
+  // 0. Logo (centered, no content - logo is in title area)
+  {
+    id: "logo",
+    type: "info",
+    noTyping: true,
+    getText: () => t``,
+  },
+  // 1. Intro
   {
     id: "intro",
     type: "prompt",
-    noTyping: true,
     getText: () => t`Welcome to Claude Wrapped.
 
 Would you like to analyze your

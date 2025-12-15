@@ -6,6 +6,8 @@ import {
   fg,
   dim,
   bold,
+  italic,
+  brightCyan,
   StyledText,
   type TextChunk,
 } from "@opentui/core";
@@ -65,6 +67,8 @@ export class StatsBox {
   container: BoxRenderable;
   titleText: TextRenderable;
   contentText: TextRenderable;
+  logoContainer!: BoxRenderable;
+  private normalContent!: BoxRenderable;
 
   // Layout
   private boxWidth: number = 0;
@@ -94,6 +98,7 @@ export class StatsBox {
     this.boxWidth = width;
     // Account for border (2) and padding (2) on each side
     const innerWidth = width - 4;
+    const innerHeight = height - 4;
     this.useLogo = innerWidth >= LOGO_WIDTH;
 
     this.container = new BoxRenderable(renderer, {
@@ -111,6 +116,41 @@ export class StatsBox {
       flexDirection: "column",
     });
 
+    // Centered logo container for logo slide
+    this.logoContainer = new BoxRenderable(renderer, {
+      id: "logo-container",
+      width: innerWidth,
+      height: innerHeight,
+      justifyContent: "center",
+      alignItems: "center",
+      flexDirection: "column",
+      visible: true,
+    });
+
+
+    // "press space to continue" prompt - italic, with "space" in bright green
+
+    this.logoContainer.add(new TextRenderable(renderer, {
+      id: "logo-text",
+      content: this.buildLogo(),
+      fg: "#FFFFFF",
+    }));
+
+    this.logoContainer.add(new TextRenderable(renderer, { content: "\n\n" }));
+    this.logoContainer.add(new TextRenderable(renderer, {
+      id: "logo-prompt",
+      content: t`${italic("press ")}${italic(brightCyan("space"))}${italic(" to continue")}`,
+      fg: "#AAAAAA",
+    }));
+
+
+    // Normal content container (title + content)
+    this.normalContent = new BoxRenderable(renderer, {
+      id: "normal-content",
+      flexDirection: "column",
+      visible: false,
+    });
+
     this.titleText = new TextRenderable(renderer, {
       id: "title-text",
       content: this.buildTitle(),
@@ -123,27 +163,26 @@ export class StatsBox {
       fg: "#AAAAAA",
     });
 
-    this.container.add(this.titleText);
-    this.container.add(new TextRenderable(renderer, { content: "\n" }));
-    this.container.add(this.contentText);
+    this.normalContent.add(this.titleText);
+    this.normalContent.add(new TextRenderable(renderer, { content: "\n" }));
+    this.normalContent.add(this.contentText);
+
+    this.container.add(this.logoContainer);
+    this.container.add(this.normalContent);
 
     this.startSlide(0);
   }
 
-  private buildTitle(): StyledText {
-    const innerWidth = this.boxWidth - 4;
+  private buildLogo(): StyledText {
     const claudeStyle = fg(CLAUDE_COLOR);
     const wrappedStyle = fg(WRAPPED_COLOR);
 
     if (this.useLogo) {
-      // Center each line of CLAUDE (orange), then WRAPPED (off-white)
       const parts: TextChunk[] = [];
 
       for (let i = 0; i < CLAUDE_LOGO.length; i++) {
         const line = CLAUDE_LOGO[i]!;
-        const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
         if (i > 0) parts.push(plainChunk("\n"));
-        parts.push(plainChunk(" ".repeat(pad)));
         parts.push(claudeStyle(line));
       }
 
@@ -151,18 +190,22 @@ export class StatsBox {
 
       for (let i = 0; i < WRAPPED_LOGO.length; i++) {
         const line = WRAPPED_LOGO[i]!;
-        const pad = Math.max(0, Math.floor((innerWidth - line.length) / 2));
         if (i > 0) parts.push(plainChunk("\n"));
-        parts.push(plainChunk(" ".repeat(pad)));
         parts.push(wrappedStyle(line));
       }
 
       return concatStyledText(...parts);
     } else {
-      // Centered bold text - CLAUDE orange, WRAPPED off-white
-      const pad = Math.max(0, Math.floor((innerWidth - 14) / 2)); // "CLAUDE WRAPPED" = 14 chars
-      return t`${" ".repeat(pad)}${claudeStyle("CLAUDE")} ${wrappedStyle("WRAPPED")}`;
+      return t`${claudeStyle("CLAUDE")} ${wrappedStyle("WRAPPED")}`;
     }
+  }
+
+  private buildTitle(): StyledText {
+    const innerWidth = this.boxWidth - 4;
+    const claudeStyle = fg(CLAUDE_COLOR);
+    // Centered bold text - CLAUDE orange, WRAPPED white
+    const pad = Math.max(0, Math.floor((innerWidth - 14) / 2)); // "CLAUDE WRAPPED" = 14 chars
+    return t`${" ".repeat(pad)}${bold(claudeStyle("CLAUDE"))} ${bold("WRAPPED")}`;
   }
 
   public setStatsData(data: any) {
@@ -186,6 +229,15 @@ export class StatsBox {
     this.currentSlideIndex = index;
     const slide = SLIDES[index];
     if (!slide) return;
+
+    // Switch between logo slide (centered) and normal slides via visibility
+    if (slide.id === "logo") {
+      this.logoContainer.visible = true;
+      this.normalContent.visible = false;
+    } else {
+      this.logoContainer.visible = false;
+      this.normalContent.visible = true;
+    }
 
     this.fullStyled = slide.getText(this.statsData);
     this.plainText = getPlainText(this.fullStyled);
@@ -288,8 +340,9 @@ export class StatsBox {
       content = concatStyledText(content, plainChunk("\n" + this.debugStats));
     }
 
-    // Blinking cursor
-    if (this.showCursor) {
+    // Blinking cursor (hide on prompt slides after typing finishes)
+    const hidePromptCursor = slide.type === "prompt" && this.typingFinished;
+    if (this.showCursor && !hidePromptCursor) {
       content = concatStyledText(content, cursorStyle("█"));
     }
 
