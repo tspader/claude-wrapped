@@ -33,7 +33,7 @@ import {
   type LightingConfig,
   type Vec3 as SceneVec3,
 } from "./scene";
-import { ActionQueue, easeOutCubic, easeInOutCubic } from "./scene/script";
+import { ActionQueue, easeOutCubic, easeInOutCubic, easeInQuad } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
 import { seededRandom, createNoiseGenerator } from "./scene/utils";
 import { checkStatsExistence, readStatsCache, postStatsToApi, invokeClaudeStats } from "./utils/stats";
@@ -136,7 +136,7 @@ But, if you'd still rather not, you can quit the program now`,
             ctx.setData("entry", response.entry);
             ctx.setData("global", response.global);
             ctx.setData("stats", stats);
-            ctx.setStatus(text`${fg("#66FF66")("Upload complete!")}`);
+            ctx.setStatus(text`${fg("#66FF66")("Success!")}`);
             await delay(500);
             ctx.advance();
             return;
@@ -169,7 +169,16 @@ But, if you'd still rather not, you can quit the program now`,
     id: "lights-on",
     type: "script",
     script: [
-      { type: "lerp", target: "pointLightIntensity", to: 3.0, duration: 2.0, easing: easeInOutCubic },
+      { type: "lerp", target: "light.intensity", to: 2.0, duration: 2.0, easing: easeInQuad },
+    ],
+    next: "light-rise",
+  },
+  {
+    id: "light-rise",
+    type: "script",
+    script: [
+      { type: "lerp", target: "light.y", to: 0.8, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "light.z", to: 0.0, duration: 1.5, easing: easeInOutCubic },
     ],
     next: "move-top-left",
   },
@@ -472,19 +481,26 @@ async function main() {
     y: config.camera.eye[1],
     z: config.camera.eye[2],
     fov: config.camera.fov,
-    pointLightIntensity: 0,
   };
 
+  // Static lighting config
   const lighting: LightingConfig = {
     ambient: 0.0,
     directional: {
-      direction: [0.5, 0.75, -1.0] as SceneVec3,
+      direction: [0.5, 0.75, -0.25] as SceneVec3,
       intensity: 1.0,
     },
   };
 
-  const pointLightColor: SceneVec3 = [0.8, 0.9, 1.0];
-  const pointLightRadius = 0.2;
+  // Dramatic point light state (dialogue-controlled)
+  const dramaticLight = {
+    x: 0.0,
+    y: 0.3,
+    z: -0.5,
+    intensity: 0,
+  };
+  const dramaticLightColor: SceneVec3 = [0.8, 0.9, 1.0];
+  const dramaticLightRadius = 0.5;
 
   // ==========================================================================
   // Snow & Camera Noise State
@@ -528,7 +544,10 @@ async function main() {
         case "camera.y": return cameraState.y;
         case "camera.z": return cameraState.z;
         case "camera.fov": return cameraState.fov;
-        case "pointLightIntensity": return cameraState.pointLightIntensity;
+        case "light.x": return dramaticLight.x;
+        case "light.y": return dramaticLight.y;
+        case "light.z": return dramaticLight.z;
+        case "light.intensity": return dramaticLight.intensity;
         default: return 0;
       }
     },
@@ -538,7 +557,10 @@ async function main() {
         case "camera.y": cameraState.y = value; break;
         case "camera.z": cameraState.z = value; break;
         case "camera.fov": cameraState.fov = value; break;
-        case "pointLightIntensity": cameraState.pointLightIntensity = value; break;
+        case "light.x": dramaticLight.x = value; break;
+        case "light.y": dramaticLight.y = value; break;
+        case "light.z": dramaticLight.z = value; break;
+        case "light.intensity": dramaticLight.intensity = value; break;
       }
     }
   );
@@ -713,20 +735,16 @@ async function main() {
     const [dx, dy, dz] = lighting.directional.direction;
     wasm.exports.set_lighting(lighting.ambient, dx, dy, dz, lighting.directional.intensity);
 
-    // Point lights from snowflakes (up to 64)
-    const numPointLights = Math.min(snowflakes.length, 64);
-    for (let i = 0; i < numPointLights; i++) {
-      const flake = snowflakes[i]!;
-      wasm.pointLightX[i] = flake.x;
-      wasm.pointLightY[i] = flake.y;
-      wasm.pointLightZ[i] = flake.z;
-      wasm.pointLightR[i] = pointLightColor[0];
-      wasm.pointLightG[i] = pointLightColor[1];
-      wasm.pointLightB[i] = pointLightColor[2];
-      wasm.pointLightIntensity[i] = cameraState.pointLightIntensity;
-      wasm.pointLightRadius[i] = pointLightRadius;
-    }
-    wasm.exports.set_point_lights(numPointLights);
+    // Single dramatic point light
+    wasm.pointLightX[0] = dramaticLight.x;
+    wasm.pointLightY[0] = dramaticLight.y;
+    wasm.pointLightZ[0] = dramaticLight.z;
+    wasm.pointLightR[0] = dramaticLightColor[0];
+    wasm.pointLightG[0] = dramaticLightColor[1];
+    wasm.pointLightB[0] = dramaticLightColor[2];
+    wasm.pointLightIntensity[0] = dramaticLight.intensity;
+    wasm.pointLightRadius[0] = dramaticLightRadius;
+    wasm.exports.set_point_lights(1);
     wasm.exports.march_rays();
     wasm.exports.composite(sceneWidth, sceneHeight);
 
