@@ -2,6 +2,21 @@ import type { StatsBox } from "./StatsBox";
 import { invokeClaudeStats, readStatsCache, checkStatsExistence, postStatsToApi } from "../utils/stats";
 import { t, green, cyan, yellow, bold, type StyledText } from "@opentui/core";
 
+// Abortable delay helper
+function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timeout = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timeout);
+      reject(new DOMException("Aborted", "AbortError"));
+    }, { once: true });
+  });
+}
+
 export type SlideType = "prompt" | "action" | "info";
 
 export interface SlideOption {
@@ -47,8 +62,9 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
     next: "messages",
     getText: () => t`Crunching the numbers...`,
     onEnter: async (box: StatsBox) => {
-      await new Promise(r => setTimeout(r, 500));
+      const signal = box.abortSignal;
       try {
+        await delay(500, signal);
         await invokeClaudeStats();
         if (!checkStatsExistence()) throw new Error("Stats file not generated.");
         const stats = readStatsCache();
@@ -58,6 +74,7 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
         let lastError: Error | null = null;
 
         for (let attempt = 0; attempt <= delays.length; attempt++) {
+          if (signal.aborted) return;
           try {
             const response = await postStatsToApi(stats);
             box.setStatsData({ ...stats, ...response });
@@ -66,10 +83,11 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
           } catch (e: any) {
             lastError = e;
             if (attempt < delays.length) {
-              const delay = delays[attempt]!;
-              for (let remaining = delay; remaining >= 0; remaining--) {
-                box.setStatus(t`Failed to post stats. Retry ${yellow(`${attempt + 1}/${delays.length}`)} in ${yellow(String(remaining))}s...`);
-                await new Promise(r => setTimeout(r, 1000));
+              const delaySeconds = delays[attempt]!;
+              for (let remaining = delaySeconds; remaining >= 0; remaining--) {
+                if (signal.aborted) return;
+                try { box.setStatus(t`Failed to post stats. Retry ${yellow(`${attempt + 1}/${delays.length}`)} in ${yellow(String(remaining))}s...`); } catch {}
+                await delay(1000, signal);
               }
             }
           }
@@ -77,7 +95,8 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
 
         throw lastError || new Error("Failed to post stats after retries");
       } catch (e: any) {
-        box.setError(e.message);
+        if (e.name === "AbortError") return; // Silently exit on abort
+        try { box.setError(e.message); } catch {}
       }
     }
   },

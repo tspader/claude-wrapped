@@ -955,13 +955,20 @@ async function main(): Promise<void> {
   renderer.root.add(statsBox.container);
 
   // Setup input handling
-  process.stdin.on('data', async (data: Buffer) => {
+  const stdinHandler = async (data: Buffer) => {
     const s = data.toString();
     // Map common keys
     if (s === '\u001b[D' || s === 'h') await statsBox.handleInput('ArrowLeft');
     if (s === '\u001b[C' || s === 'l') await statsBox.handleInput('ArrowRight');
     if (s === '\r' || s === '\n') await statsBox.handleInput('Enter');
     if (s === ' ') await statsBox.handleInput(' ');
+  };
+  process.stdin.on('data', stdinHandler);
+
+  // Cleanup on exit to prevent async callbacks from touching destroyed UI
+  process.on('exit', () => {
+    process.stdin.off('data', stdinHandler);
+    statsBox.destroy();
   });
 
   // Frame timing tracking

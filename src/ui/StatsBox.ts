@@ -93,6 +93,10 @@ export class StatsBox {
   // Prompt State
   private selectedOptionIndex: number = 0;
 
+  // Lifecycle
+  private destroyed: boolean = false;
+  private abortController: AbortController = new AbortController();
+
   constructor(renderer: any, width: number, height: number, left: number, top: number) {
     this.renderer = renderer;
     // Check if we have room for ASCII art logo (border=1, padding=1 on each side = 4 total)
@@ -247,6 +251,7 @@ export class StatsBox {
   }
 
   public setError(msg: string) {
+    if (this.destroyed) return;
     this.fullStyled = t`Error: ${msg}`;
     this.plainText = "Error: " + msg;
     this.displayIndex = this.plainText.length;
@@ -255,11 +260,21 @@ export class StatsBox {
   }
 
   public setStatus(styled: StyledText) {
+    if (this.destroyed) return;
     this.fullStyled = styled;
     this.plainText = getPlainText(styled);
     this.displayIndex = this.plainText.length;
     this.typingFinished = true;
     this.renderContent();
+  }
+
+  public destroy() {
+    this.destroyed = true;
+    this.abortController.abort();
+  }
+
+  public get abortSignal(): AbortSignal {
+    return this.abortController.signal;
   }
 
   private goToSlide(id: string) {
@@ -365,6 +380,7 @@ export class StatsBox {
   }
 
   public nextSlide() {
+    if (this.destroyed) return;
     const slide = this.getCurrentSlide();
     if (slide) {
       this.goToSlide(slide.next);
@@ -376,6 +392,7 @@ export class StatsBox {
   // ==========================================================================
 
   public update(deltaTime: number) {
+    if (this.destroyed) return;
     const slide = this.getCurrentSlide();
     if (!slide) return;
 
@@ -439,6 +456,7 @@ export class StatsBox {
   // ==========================================================================
 
   private renderContent() {
+    if (this.destroyed) return;
     const slide = this.getCurrentSlide();
     if (!slide) return;
 
