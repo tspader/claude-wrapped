@@ -11,7 +11,7 @@ import {
   StyledText,
   type TextChunk,
 } from "@opentui/core";
-import { SLIDES } from "./slides";
+import { SLIDES, START_SLIDE, type Slide } from "./slides";
 import { CLAUDE_LOGO, WRAPPED_LOGO, LOGO_WIDTH, CLAUDE_COLOR, WRAPPED_COLOR } from "./logo";
 
 // Off-white cursor color
@@ -70,14 +70,15 @@ export class StatsBox {
   logoContainer!: BoxRenderable;
   private normalContent!: BoxRenderable;
   private titleContainer!: BoxRenderable;
+  private optionsContainer!: BoxRenderable;
+  private renderer: any;
 
   // Layout
-  private boxWidth: number = 0;
   private useLogo: boolean = false;
 
   // State
   private statsData: any = {};
-  private currentSlideIndex: number = 0;
+  private currentSlideId: string = START_SLIDE;
 
   // Typing State
   private fullStyled: StyledText = new StyledText([]);
@@ -92,11 +93,8 @@ export class StatsBox {
   // Prompt State
   private selectedOptionIndex: number = 0;
 
-  // Debug Stats
-  private debugStats: string = "";
-
   constructor(renderer: any, width: number, height: number, left: number, top: number) {
-    this.boxWidth = width;
+    this.renderer = renderer;
     // Account for border (2) and padding (2) on each side
     const innerWidth = width - 4;
     const innerHeight = height - 4;
@@ -172,13 +170,22 @@ export class StatsBox {
       fg: "#AAAAAA",
     });
 
+    // options container (will be populated dynamically)
+    this.optionsContainer = new BoxRenderable(renderer, {
+      id: "options-container",
+      flexDirection: "row",
+      marginTop: 2,
+      visible: false,
+    });
+
     this.normalContent.add(this.titleContainer);
     this.normalContent.add(this.contentText);
+    this.normalContent.add(this.optionsContainer);
 
     this.container.add(this.logoContainer);
     this.container.add(this.normalContent);
 
-    this.startSlide(0);
+    this.goToSlide(START_SLIDE);
   }
 
   private buildLogo(): StyledText {
@@ -214,6 +221,10 @@ export class StatsBox {
     return t`${bold(claudeStyle("CLAUDE"))} ${bold("WRAPPED")}`;
   }
 
+  private getCurrentSlide(): Slide | undefined {
+    return SLIDES[this.currentSlideId];
+  }
+
   public setStatsData(data: any) {
     this.statsData = { ...this.statsData, ...data };
   }
@@ -230,14 +241,14 @@ export class StatsBox {
     this.renderContent();
   }
 
-  private startSlide(index: number) {
-    if (index >= SLIDES.length) return;
-    this.currentSlideIndex = index;
-    const slide = SLIDES[index];
+  private goToSlide(id: string) {
+    const slide = SLIDES[id];
     if (!slide) return;
 
+    this.currentSlideId = id;
+
     // Switch between logo slide (centered) and normal slides via visibility
-    if (slide.id === "logo") {
+    if (id === "logo") {
       this.logoContainer.visible = true;
       this.normalContent.visible = false;
     } else {
@@ -259,6 +270,7 @@ export class StatsBox {
     }
 
     this.selectedOptionIndex = 0;
+    this.buildOptions(slide);
     this.renderContent();
 
     if (slide.type === "action" && slide.onEnter) {
@@ -266,12 +278,80 @@ export class StatsBox {
     }
   }
 
+  private buildOptions(slide: Slide) {
+    // Clear existing options
+    const children = this.optionsContainer.getChildren();
+    for (const child of children) {
+      this.optionsContainer.remove(child.id);
+    }
+
+    if (slide.type !== "prompt" || !slide.options) {
+      this.optionsContainer.visible = false;
+      return;
+    }
+
+    // Create option renderables
+    slide.options.forEach((opt, i) => {
+      const optionBox = new BoxRenderable(this.renderer, {
+        id: `option-${i}`,
+        flexDirection: "row",
+        marginRight: 3,
+      });
+
+      const markerText = new TextRenderable(this.renderer, {
+        id: `option-marker-${i}`,
+        content: "  ",
+        fg: "#FFFFFF",
+      });
+
+      const labelText = new TextRenderable(this.renderer, {
+        id: `option-label-${i}`,
+        content: opt.label,
+        fg: "#AAAAAA",
+      });
+
+      optionBox.add(markerText);
+      optionBox.add(labelText);
+      this.optionsContainer.add(optionBox);
+    });
+
+    // Will be shown when typing finishes
+    this.optionsContainer.visible = false;
+  }
+
+  private updateOptionsDisplay() {
+    const slide = this.getCurrentSlide();
+    if (!slide || slide.type !== "prompt" || !slide.options) return;
+
+    const children = this.optionsContainer.getChildren();
+    slide.options.forEach((opt, i) => {
+      const optionBox = children[i];
+      if (!optionBox) return;
+
+      const boxChildren = optionBox.getChildren();
+      const markerText = boxChildren[0] as TextRenderable;
+      const labelText = boxChildren[1] as TextRenderable;
+
+      const isSelected = i === this.selectedOptionIndex;
+      markerText.content = isSelected ? "> " : "  ";
+
+      if (isSelected) {
+        labelText.content = t`${opt.style(`[ ${opt.label} ]`)}`;
+      } else {
+        labelText.content = t`${dim(opt.label)}`;
+      }
+    });
+  }
+
   public nextSlide() {
-    this.startSlide(this.currentSlideIndex + 1);
+    const slide = this.getCurrentSlide();
+    if (slide) {
+      this.goToSlide(slide.next);
+    }
   }
 
   public update(deltaTime: number) {
-    const slide = SLIDES[this.currentSlideIndex];
+    const slide = this.getCurrentSlide();
     if (!slide) return;
 
     // Cursor blink
@@ -307,6 +387,12 @@ export class StatsBox {
         if (this.displayIndex >= this.plainText.length) {
           this.displayIndex = this.plainText.length;
           this.typingFinished = true;
+          // Show options when typing finishes
+          const currentSlide = this.getCurrentSlide();
+          if (currentSlide?.type === "prompt" && currentSlide.options) {
+            this.optionsContainer.visible = true;
+            this.updateOptionsDisplay();
+          }
         }
         this.renderContent();
       }
@@ -314,32 +400,11 @@ export class StatsBox {
   }
 
   private renderContent() {
-    const slide = SLIDES[this.currentSlideIndex];
+    const slide = this.getCurrentSlide();
     if (!slide) return;
 
     // Slice styled text to visible characters
     let content = sliceStyledText(this.fullStyled, this.displayIndex);
-
-    // Add options if prompt and typing finished
-    if (this.typingFinished && slide.type === "prompt" && slide.options) {
-      const optionParts: (StyledText | TextChunk)[] = [content, plainChunk("\n\n")];
-
-      slide.options.forEach((opt, i) => {
-        const isSelected = i === this.selectedOptionIndex;
-        const marker = isSelected ? "> " : "  ";
-        if (isSelected) {
-          optionParts.push(plainChunk(marker));
-          optionParts.push(opt.style(`[ ${opt.label} ]`));
-          optionParts.push(plainChunk("   "));
-        } else {
-          optionParts.push(plainChunk(marker));
-          optionParts.push(dim(opt.label));
-          optionParts.push(plainChunk("   "));
-        }
-      });
-
-      content = concatStyledText(...optionParts);
-    }
 
     // Blinking cursor (hide on prompt slides after typing finishes)
     const hidePromptCursor = slide.type === "prompt" && this.typingFinished;
@@ -348,16 +413,26 @@ export class StatsBox {
     }
 
     this.contentText.content = content;
+
+    // Update options display if visible
+    if (this.optionsContainer.visible) {
+      this.updateOptionsDisplay();
+    }
   }
 
   public async handleInput(key: string): Promise<void> {
-    const slide = SLIDES[this.currentSlideIndex];
+    const slide = this.getCurrentSlide();
     if (!slide) return;
 
     // Fast forward typing
     if (!this.typingFinished && (key === "Enter" || key === " ")) {
       this.displayIndex = this.plainText.length;
       this.typingFinished = true;
+      // Show options
+      if (slide.type === "prompt" && slide.options) {
+        this.optionsContainer.visible = true;
+        this.updateOptionsDisplay();
+      }
       this.renderContent();
       return;
     }
@@ -365,29 +440,14 @@ export class StatsBox {
     if (slide.type === "prompt" && slide.options) {
       if (key === "ArrowLeft" || key === "h") {
         this.selectedOptionIndex = Math.max(0, this.selectedOptionIndex - 1);
-        this.renderContent();
+        this.updateOptionsDisplay();
       } else if (key === "ArrowRight" || key === "l") {
         this.selectedOptionIndex = Math.min(slide.options.length - 1, this.selectedOptionIndex + 1);
-        this.renderContent();
+        this.updateOptionsDisplay();
       } else if (key === "Enter" || key === " ") {
         const option = slide.options[this.selectedOptionIndex];
-        if (!option) return;
-        const val = option.value;
-        if (val === "yes") {
-          this.nextSlide();
-        } else {
-          if (slide.id === "intro") {
-            this.statsData = {};
-            const doneIdx = SLIDES.findIndex(s => s.id === "done");
-            this.startSlide(doneIdx);
-            this.fullStyled = t`Visualization only mode.`;
-            this.plainText = "Visualization only mode.";
-            this.displayIndex = this.plainText.length;
-            this.typingFinished = true;
-            this.renderContent();
-          } else {
-            this.nextSlide();
-          }
+        if (option) {
+          this.goToSlide(option.targetSlide);
         }
       }
     } else if (slide.type === "info") {
@@ -397,12 +457,7 @@ export class StatsBox {
     }
   }
 
-  public setDebugStats(text: string) {
-    this.debugStats = text;
-    // Only display debug stats when on the "done" slide (visualization mode)
-    const slide = SLIDES[this.currentSlideIndex];
-    if (slide && slide.id === "done") {
-      this.renderContent();
-    }
+  public setDebugStats(_text: string) {
+    // Debug stats display removed - kept for API compatibility
   }
 }
