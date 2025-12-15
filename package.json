@@ -9,7 +9,7 @@
     "dist/**/*"
   ],
   "scripts": {
-    "build:wasm": "clang --target=wasm32 -O3 -msimd128 -nostdlib -Wl,--no-entry -Wl,--export-all -o src/wasm/renderer.wasm src/wasm/renderer.c",
+    "build:wasm": "zig cc --target=wasm32-freestanding -msimd128 -O3 -Wl,--no-entry -rdynamic -o src/wasm/renderer.wasm src/wasm/renderer.c",
     "build": "bun run build:wasm && bun build src/main.ts --outdir dist --target bun --format esm && cp -r src/wasm dist/",
     "prepublishOnly": "bun run build",
     "start": "bun run build:wasm && bun src/main.ts"
