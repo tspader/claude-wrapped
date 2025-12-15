@@ -1,3 +1,5 @@
+import type { StatsCache, Entry, GlobalStats } from "./types";
+
 interface Env {
   wrapped: D1Database;
 }
@@ -20,63 +22,6 @@ function isValidExternalId(id: unknown): id is string {
     && id.length >= 1
     && id.length <= 128
     && /^[a-zA-Z0-9_-]+$/.test(id);
-}
-
-interface StatsCache {
-  dailyActivity: Array<{
-    date: string;
-    messageCount: number;
-    sessionCount: number;
-    toolCallCount: number;
-  }>;
-  dailyModelTokens: Array<{
-    date: string;
-    tokensByModel: Record<string, number>;
-  }>;
-  modelUsage: Record<string, {
-    inputTokens: number;
-    outputTokens: number;
-    cacheReadInputTokens: number;
-    cacheCreationInputTokens: number;
-    costUSD: number;
-  }>;
-  totalSessions: number;
-  totalMessages: number;
-  hourCounts: Record<string, number>;
-}
-
-// time_persona: 0=morning, 1=afternoon, 2=evening, 3=night, 4=unknown
-interface Entry {
-  total_messages: number;
-  total_tokens: number;
-  total_cost: number;
-  morning_count: number;
-  afternoon_count: number;
-  evening_count: number;
-  night_count: number;
-  time_persona: number;
-  most_active_day: number;
-  most_active_day_tokens: number;
-  most_active_day_messages: number;
-}
-
-interface GlobalStats {
-  total_entries: number;
-  highest_total_messages: number;
-  highest_total_tokens: number;
-  highest_total_cost: number;
-  highest_most_active_day_tokens: number;
-  highest_most_active_day_messages: number;
-  avg_total_messages: number;
-  avg_total_tokens: number;
-  avg_total_cost: number;
-  avg_most_active_day_tokens: number;
-  avg_most_active_day_messages: number;
-  morning_person_count: number;
-  afternoon_person_count: number;
-  evening_person_count: number;
-  night_person_count: number;
-  unknown_person_count: number;
 }
 
 async function recomputeGlobalStats(db: D1Database): Promise<void> {
@@ -102,7 +47,27 @@ async function recomputeGlobalStats(db: D1Database): Promise<void> {
   `).run();
 }
 
-async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
+interface GlobalStatsRow {
+  total_entries: number;
+  highest_total_messages: number;
+  highest_total_tokens: number;
+  highest_total_cost: number;
+  highest_most_active_day_tokens: number;
+  highest_most_active_day_messages: number;
+  sum_total_messages: number;
+  sum_total_tokens: number;
+  sum_total_cost: number;
+  sum_most_active_day_tokens: number;
+  sum_most_active_day_messages: number;
+  morning_person_count: number;
+  afternoon_person_count: number;
+  evening_person_count: number;
+  night_person_count: number;
+  unknown_person_count: number;
+  recompute_on_write: number;
+}
+
+async function getGlobalStatsRow(db: D1Database): Promise<GlobalStatsRow> {
   const row = await db.prepare(`
     SELECT
       total_entries,
@@ -120,31 +85,19 @@ async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
       afternoon_person_count,
       evening_person_count,
       night_person_count,
-      unknown_person_count
+      unknown_person_count,
+      recompute_on_write
     FROM global_stats WHERE id = 1
-  `).first<{
-    total_entries: number;
-    highest_total_messages: number;
-    highest_total_tokens: number;
-    highest_total_cost: number;
-    highest_most_active_day_tokens: number;
-    highest_most_active_day_messages: number;
-    sum_total_messages: number;
-    sum_total_tokens: number;
-    sum_total_cost: number;
-    sum_most_active_day_tokens: number;
-    sum_most_active_day_messages: number;
-    morning_person_count: number;
-    afternoon_person_count: number;
-    evening_person_count: number;
-    night_person_count: number;
-    unknown_person_count: number;
-  }>();
+  `).first<GlobalStatsRow>();
 
   if (!row) {
     throw new Error("global_stats row missing");
   }
 
+  return row;
+}
+
+function rowToGlobalStats(row: GlobalStatsRow): GlobalStats {
   const n = row.total_entries || 1;
   return {
     total_entries: row.total_entries,
@@ -164,6 +117,11 @@ async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
     night_person_count: row.night_person_count,
     unknown_person_count: row.unknown_person_count,
   };
+}
+
+async function getGlobalStats(db: D1Database): Promise<GlobalStats> {
+  const row = await getGlobalStatsRow(db);
+  return rowToGlobalStats(row);
 }
 
 // Reasonable upper bounds for sanity checks
@@ -282,7 +240,8 @@ export default {
       ).bind(user.id).first<Entry>();
 
       if (existing) {
-        return Response.json({ ok: true, entry: existing });
+        const global = await getGlobalStats(env.wrapped);
+        return Response.json({ ok: true, entry: existing, global });
       }
 
       const entry = computeEntry(stats);
@@ -307,7 +266,23 @@ export default {
         entry.most_active_day_messages
       ).run();
 
-      return Response.json({ ok: true, entry });
+      // Read global stats row to check recompute flag
+      let globalRow = await getGlobalStatsRow(env.wrapped);
+
+      if (globalRow.recompute_on_write) {
+        await recomputeGlobalStats(env.wrapped);
+        globalRow = await getGlobalStatsRow(env.wrapped);
+
+        // Disable recompute_on_write after 1000 entries
+        if (globalRow.total_entries >= 1000) {
+          await env.wrapped.prepare(
+            "UPDATE global_stats SET recompute_on_write = 0 WHERE id = 1"
+          ).run();
+        }
+      }
+
+      const global = rowToGlobalStats(globalRow);
+      return Response.json({ ok: true, entry, global });
     }
 
     // GET /stats/:external_id - get user entry + global stats

@@ -1,5 +1,5 @@
 name = "claude-wrapped"
-main = "backend/index.ts"
+main = "src/backend/index.ts"
 compatibility_date = "2024-01-01"
 
 [triggers]

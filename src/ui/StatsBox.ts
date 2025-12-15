@@ -254,6 +254,14 @@ export class StatsBox {
     this.renderContent();
   }
 
+  public setStatus(styled: StyledText) {
+    this.fullStyled = styled;
+    this.plainText = getPlainText(styled);
+    this.displayIndex = this.plainText.length;
+    this.typingFinished = true;
+    this.renderContent();
+  }
+
   private goToSlide(id: string) {
     const slide = SLIDES[id];
     if (!slide) return;
@@ -363,110 +371,148 @@ export class StatsBox {
     }
   }
 
+  // ==========================================================================
+  // Update Loop - dispatches to slide type handlers
+  // ==========================================================================
+
   public update(deltaTime: number) {
     const slide = this.getCurrentSlide();
     if (!slide) return;
 
-    // Cursor blink
+    this.updateCursorBlink(deltaTime);
+    this.updateTyping(deltaTime);
+  }
+
+  private updateCursorBlink(deltaTime: number) {
     this.cursorBlinkTimer += deltaTime;
     if (this.cursorBlinkTimer > 500) {
       this.cursorBlinkTimer = 0;
       this.showCursor = !this.showCursor;
       this.renderContent();
     }
+  }
 
-    // Typing
-    if (!this.typingFinished) {
-      this.typeTimer += deltaTime;
-      if (this.typeTimer >= this.nextCharDelay) {
-        this.typeTimer = 0;
-        this.displayIndex++;
+  private updateTyping(deltaTime: number) {
+    if (this.typingFinished) return;
 
-        // Base delay with jitter: 30-60ms
-        this.nextCharDelay = 30 + Math.random() * 30;
+    this.typeTimer += deltaTime;
+    if (this.typeTimer < this.nextCharDelay) return;
 
-        // Pause on punctuation
-        if (this.displayIndex > 0 && this.displayIndex <= this.plainText.length) {
-          const lastChar = this.plainText[this.displayIndex - 1];
-          if (lastChar === '.' || lastChar === '?' || lastChar === '!') {
-            this.nextCharDelay += 300;
-          } else if (lastChar === ',') {
-            this.nextCharDelay += 100;
-          } else if (lastChar === '\n') {
-            this.nextCharDelay += 200;
-          }
-        }
+    this.typeTimer = 0;
+    this.displayIndex++;
 
-        if (this.displayIndex >= this.plainText.length) {
-          this.displayIndex = this.plainText.length;
-          this.typingFinished = true;
-          // Show options when typing finishes
-          const currentSlide = this.getCurrentSlide();
-          if (currentSlide?.type === "prompt" && currentSlide.options) {
-            this.optionsContainer.visible = true;
-            this.updateOptionsDisplay();
-          }
-        }
-        this.renderContent();
+    // Base delay with jitter: 30-60ms
+    this.nextCharDelay = 30 + Math.random() * 30;
+
+    // Pause on punctuation
+    if (this.displayIndex > 0 && this.displayIndex <= this.plainText.length) {
+      const lastChar = this.plainText[this.displayIndex - 1];
+      if (lastChar === '.' || lastChar === '?' || lastChar === '!') {
+        this.nextCharDelay += 300;
+      } else if (lastChar === ',') {
+        this.nextCharDelay += 100;
+      } else if (lastChar === '\n') {
+        this.nextCharDelay += 200;
       }
     }
+
+    if (this.displayIndex >= this.plainText.length) {
+      this.finishTyping();
+    }
+
+    this.renderContent();
   }
+
+  private finishTyping() {
+    this.displayIndex = this.plainText.length;
+    this.typingFinished = true;
+
+    const slide = this.getCurrentSlide();
+    if (slide?.type === "prompt" && slide.options) {
+      this.optionsContainer.visible = true;
+      this.updateOptionsDisplay();
+    }
+  }
+
+  // ==========================================================================
+  // Render
+  // ==========================================================================
 
   private renderContent() {
     const slide = this.getCurrentSlide();
     if (!slide) return;
 
-    // Slice styled text to visible characters
     let content = sliceStyledText(this.fullStyled, this.displayIndex);
 
-    // Blinking cursor (hide on prompt slides after typing finishes)
-    const hidePromptCursor = slide.type === "prompt" && this.typingFinished;
-    if (this.showCursor && !hidePromptCursor) {
+    // Show cursor unless on prompt slide with typing finished
+    const showCursor = this.showCursor && !(slide.type === "prompt" && this.typingFinished);
+    if (showCursor) {
       content = concatStyledText(content, cursorStyle("█"));
     }
 
     this.contentText.content = content;
 
-    // Update options display if visible
     if (this.optionsContainer.visible) {
       this.updateOptionsDisplay();
     }
   }
 
+  // ==========================================================================
+  // Input Handling - dispatches to slide type handlers
+  // ==========================================================================
+
   public async handleInput(key: string): Promise<void> {
     const slide = this.getCurrentSlide();
     if (!slide) return;
 
-    // Fast forward typing
+    // Fast forward typing on any slide type
     if (!this.typingFinished && (key === "Enter" || key === " ")) {
-      this.displayIndex = this.plainText.length;
-      this.typingFinished = true;
-      // Show options
-      if (slide.type === "prompt" && slide.options) {
-        this.optionsContainer.visible = true;
-        this.updateOptionsDisplay();
-      }
+      this.finishTyping();
       this.renderContent();
       return;
     }
 
-    if (slide.type === "prompt" && slide.options) {
-      if (key === "ArrowLeft" || key === "h") {
+    // Dispatch to slide type handler
+    switch (slide.type) {
+      case "prompt":
+        this.handlePromptInput(key, slide);
+        break;
+      case "info":
+        this.handleInfoInput(key);
+        break;
+      case "action":
+        // Action slides don't accept input - they auto-advance
+        break;
+    }
+  }
+
+  private handlePromptInput(key: string, slide: Slide) {
+    if (!slide.options) return;
+
+    switch (key) {
+      case "ArrowLeft":
+      case "h":
         this.selectedOptionIndex = Math.max(0, this.selectedOptionIndex - 1);
         this.updateOptionsDisplay();
-      } else if (key === "ArrowRight" || key === "l") {
+        break;
+      case "ArrowRight":
+      case "l":
         this.selectedOptionIndex = Math.min(slide.options.length - 1, this.selectedOptionIndex + 1);
         this.updateOptionsDisplay();
-      } else if (key === "Enter" || key === " ") {
+        break;
+      case "Enter":
+      case " ":
         const option = slide.options[this.selectedOptionIndex];
         if (option) {
           this.goToSlide(option.targetSlide);
         }
-      }
-    } else if (slide.type === "info") {
-      if (key === "Enter" || key === " ") {
-        this.nextSlide();
-      }
+        break;
+    }
+  }
+
+  private handleInfoInput(key: string) {
+    if (key === "Enter" || key === " ") {
+      this.nextSlide();
     }
   }
 

@@ -1,7 +1,6 @@
 import type { StatsBox } from "./StatsBox";
-import { invokeClaudeStats, readStatsCache, checkStatsExistence } from "../utils/stats";
-import { hostname } from "os";
-import { t, green, cyan, yellow, red, bold, dim, type StyledText } from "@opentui/core";
+import { invokeClaudeStats, readStatsCache, checkStatsExistence, postStatsToApi } from "../utils/stats";
+import { t, green, cyan, yellow, bold, type StyledText } from "@opentui/core";
 
 export type SlideType = "prompt" | "action" | "info";
 
@@ -40,7 +39,6 @@ This will run: ${cyan("claude --print \"/stats\"")}
 And read:    ${cyan("~/.claude/stats-cache.json")}`,
     options: [
       { label: "YES", targetSlide: "fetching", style: green },
-      { label: "NO", targetSlide: "done", style: red },
     ]
   },
 
@@ -53,8 +51,31 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
       try {
         await invokeClaudeStats();
         if (!checkStatsExistence()) throw new Error("Stats file not generated.");
-        box.setStatsData(readStatsCache());
-        box.nextSlide();
+        const stats = readStatsCache();
+
+        // Retry with exponential backoff: 1s, 4s, 16s, 64s
+        const delays = [1, 4, 16, 64];
+        let lastError: Error | null = null;
+
+        for (let attempt = 0; attempt <= delays.length; attempt++) {
+          try {
+            const response = await postStatsToApi(stats);
+            box.setStatsData({ ...stats, ...response });
+            box.nextSlide();
+            return;
+          } catch (e: any) {
+            lastError = e;
+            if (attempt < delays.length) {
+              const delay = delays[attempt]!;
+              for (let remaining = delay; remaining >= 0; remaining--) {
+                box.setStatus(t`Failed to post stats. Retry ${yellow(`${attempt + 1}/${delays.length}`)} in ${yellow(String(remaining))}s...`);
+                await new Promise(r => setTimeout(r, 1000));
+              }
+            }
+          }
+        }
+
+        throw lastError || new Error("Failed to post stats after retries");
       } catch (e: any) {
         box.setError(e.message);
       }
@@ -66,11 +87,14 @@ And read:    ${cyan("~/.claude/stats-cache.json")}`,
     next: "sessions",
     getText: (d) => {
       const count = d.totalMessages || 0;
+      const totalUsers = d.global?.total_entries || 0;
       return t`This year, you sent
 
       ${bold(green(count.toLocaleString()))}
 
-messages to Claude.`;
+messages to Claude.
+
+${cyan(`(${totalUsers} users have shared stats)`)}`;
     }
   },
 
@@ -113,7 +137,7 @@ ${green(shortFav)}`;
 
   time: {
     type: "info",
-    next: "upload",
+    next: "done",
     getText: (d) => {
       const hours = d.hourCounts || {};
       let night = 0;
@@ -143,70 +167,12 @@ the world is ${max === night ? "asleep" : "awake"}.`;
     }
   },
 
-  upload: {
-    type: "prompt",
-    next: "uploading",
-    getText: () => t`Would you like to publish your
-stats to the global leaderboard?`,
-    options: [
-      { label: "PUBLISH", targetSlide: "uploading", style: green },
-      { label: "SKIP", targetSlide: "done", style: dim },
-    ]
-  },
-
-  uploading: {
-    type: "action",
-    next: "done",
-    getText: () => t`Uploading...`,
-    onEnter: async (box: StatsBox) => {
-      try {
-        const user = process.env.USER || "unknown";
-        const host = hostname();
-        const rawId = `${user}@${host}`;
-        const machineId = btoa(rawId).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_").slice(0, 128);
-
-        const stats = box.getStatsData();
-        const response = await fetch("http://localhost:8787/stats", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            external_id: machineId,
-            stats: stats
-          })
-        });
-
-        if (!response.ok) throw new Error(response.statusText);
-
-        stats.uploadSuccess = true;
-        box.setStatsData(stats);
-      } catch (e: any) {
-        const stats = box.getStatsData();
-        stats.uploadError = e.message;
-        box.setStatsData(stats);
-      }
-      box.nextSlide();
-    }
-  },
-
   done: {
     type: "info",
     next: "done", // terminal - loops to self
-    getText: (d) => {
-      if (d.uploadSuccess) {
-        return t`${green("SUCCESS!")}
+    getText: () => t`Thanks for using Claude.
 
-Your stats are live.
-Thanks for using Claude.`;
-      } else if (d.uploadError) {
-        return t`${red("UPLOAD FAILED")}
-
-${d.uploadError}`;
-      } else {
-        return t`Thanks for checking your stats!
-
-Keep building amazing things.`;
-      }
-    }
+Keep building amazing things.`
   }
 };
 

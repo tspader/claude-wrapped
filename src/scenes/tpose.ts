@@ -79,9 +79,9 @@ const snowParams = {
   minZ: -1.5,
   maxZ: 0.5,
   // Speed
-  baseSpeed: 1.3,
+  baseSpeed: 0.3,
   speedJitter: 0.1,
-  driftStrength: 1.2,
+  driftStrength: 0.6,
 };
 
 // =============================================================================

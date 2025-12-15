@@ -40,7 +40,8 @@ CREATE TABLE global_stats (
     afternoon_person_count INTEGER NOT NULL DEFAULT 0,
     evening_person_count INTEGER NOT NULL DEFAULT 0,
     night_person_count INTEGER NOT NULL DEFAULT 0,
-    unknown_person_count INTEGER NOT NULL DEFAULT 0
+    unknown_person_count INTEGER NOT NULL DEFAULT 0,
+    recompute_on_write INTEGER NOT NULL DEFAULT 1
 );
 
 INSERT INTO global_stats (id) VALUES (1);
