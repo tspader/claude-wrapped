@@ -1,8 +1,14 @@
 {
-  "name": "claude-wrapped",
+  "name": "@spader/claude-wrapped",
+  "version": "1.0.0",
   "module": "index.ts",
   "type": "module",
-  "private": true,
+  "bin": {
+    "claude-wrapped": "./src/dialogue-demo.ts"
+  },
+  "files": [
+    "src/**/*"
+  ],
   "scripts": {
     "build:wasm": "clang --target=wasm32 -O3 -msimd128 -nostdlib -Wl,--no-entry -Wl,--export-all -o src/wasm/renderer.wasm src/wasm/renderer.c",
     "dev": "bun run build:wasm && bun src/main.ts --scene tpose -a",
