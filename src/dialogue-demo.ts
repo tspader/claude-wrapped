@@ -48,7 +48,7 @@ import { dir } from "console";
 
 const snowParams = {
   count: 30,
-  radius: 0.05,
+  radius: 0.025,
   baseSpeed: 0.2,
   speedJitter: 0.1,
   driftStrength: 0.3,
@@ -171,7 +171,7 @@ But, if you'd still rather not, you can quit the program now`,
     id: "lights-on",
     type: "script",
     script: [
-      { type: "lerp", target: "light.intensity", to: 2.0, duration: 2.0, easing: easeInQuad },
+      { type: "lerp", target: "snowLightIntensity", to: 2.0, duration: 3, easing: easeInQuad },
     ],
     next: "light-rise",
   },
@@ -179,9 +179,9 @@ But, if you'd still rather not, you can quit the program now`,
     id: "light-rise",
     type: "script",
     script: [
-      { type: "lerp", target: "light.y", to: 0.8, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "light.z", to: -0.3, duration: 1.5, easing: easeInOutCubic },
-      { type: "lerp", target: "snowLightIntensity", to: 2.0, duration: 1.5, easing: easeInQuad },
+      { type: "lerp", target: "light.y", to: 0.8, duration: 2.0, easing: easeInOutCubic },
+      { type: "lerp", target: "light.z", to: -0.3, duration: 2.0, easing: easeInOutCubic },
+      { type: "lerp", target: "light.intensity", to: 2.0, duration: 2.0, easing: easeInQuad },
     ],
     next: "move-top-left",
   },
@@ -218,6 +218,7 @@ But, if you'd still rather not, you can quit the program now`,
       { type: "lerp", target: "camera.x", to: 0.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.y", to: 1.0, duration: 1.5, easing: easeInOutCubic },
       { type: "lerp", target: "camera.z", to: -3.0, duration: 1.5, easing: easeInOutCubic },
+      { type: "lerp", target: "smoothK", to: 1.0, duration: 4, easing: easeInOutCubic },
     ],
     next: "stat-tokens",
   },
@@ -534,7 +535,7 @@ async function main() {
   // Static lighting config
   let directionalIntensity = 1.0
   const lighting: LightingConfig = {
-    ambient: 0.0,
+    ambient: 0.4,
     directional: {
       direction: [0.5, 0.75, -1.0] as SceneVec3,
       intensity: directionalIntensity,
@@ -544,8 +545,8 @@ async function main() {
   // Dramatic point light state (dialogue-controlled)
   const dramaticLight = {
     x: 0.0,
-    y: 0.3,
-    z: -0.5,
+    y: 0.0,
+    z: -1.0,
     intensity: 0,
   };
   const dramaticLightColor: SceneVec3 = [0.8, 0.9, 1.0];
@@ -556,6 +557,8 @@ async function main() {
   const snowLightRadius = 0.2;
 
   const dramaticLightRadius = 0.5;
+
+  let smoothK = 0.0;
 
   // ==========================================================================
   // Snow & Camera Noise State
@@ -605,6 +608,7 @@ async function main() {
         case "light.intensity": return dramaticLight.intensity;
         case "snowLightIntensity": return snowLightIntensity;
         case "directionalIntensity": return directionalIntensity;
+        case "smoothK": return smoothK;
         default: return 0;
       }
     },
@@ -620,6 +624,7 @@ async function main() {
         case "light.intensity": dramaticLight.intensity = value; break;
         case "snowLightIntensity": snowLightIntensity = value; break;
         case "directionalIntensity": directionalIntensity = value; break;
+        case "smoothK": smoothK = value; break;
       }
     }
   );
@@ -771,7 +776,7 @@ async function main() {
       { blendMode: BlendMode.HARD }, // snow group
     ];
 
-    const flatScene = compileScene(allObjects, extendedGroupDefs, sceneObj.config.smoothK);
+    const flatScene = compileScene(allObjects, extendedGroupDefs, smoothK);
     loadScene(wasm, flatScene);
 
     // Calculate perlin noise camera jitter
