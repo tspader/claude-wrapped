@@ -69,6 +69,7 @@ export class StatsBox {
   contentText: TextRenderable;
   logoContainer!: BoxRenderable;
   private normalContent!: BoxRenderable;
+  private titleContainer!: BoxRenderable;
 
   // Layout
   private boxWidth: number = 0;
@@ -116,6 +117,7 @@ export class StatsBox {
       flexDirection: "column",
     });
 
+    // logo
     this.logoContainer = new BoxRenderable(renderer, {
       id: "logo-container",
       width: innerWidth,
@@ -133,26 +135,36 @@ export class StatsBox {
       marginBottom: 1
     }));
 
-    //this.logoContainer.add(new TextRenderable(renderer, { content: "\n" }));
     this.logoContainer.add(new TextRenderable(renderer, {
       id: "logo-prompt",
-      content: t`${italic("press ")}${italic(brightCyan("space"))}${italic(" to continue")}`,
+      content: t`${italic("press ")}${brightCyan("space")}${italic(" to continue")}`,
       fg: "#AAAAAA",
     }));
 
 
+    // content
     this.normalContent = new BoxRenderable(renderer, {
       id: "normal-content",
       flexDirection: "column",
       visible: false,
     });
 
+    // title
+    this.titleContainer = new BoxRenderable(renderer, {
+      id: "title-container",
+      width: innerWidth,
+      justifyContent: "center",
+      flexDirection: "row",
+      marginBottom: 1,
+    });
+
     this.titleText = new TextRenderable(renderer, {
       id: "title-text",
       content: this.buildTitle(),
       fg: "#FFFFFF",
-      marginBottom: 1
     });
+
+    this.titleContainer.add(this.titleText);
 
     this.contentText = new TextRenderable(renderer, {
       id: "content-text",
@@ -160,7 +172,7 @@ export class StatsBox {
       fg: "#AAAAAA",
     });
 
-    this.normalContent.add(this.titleText);
+    this.normalContent.add(this.titleContainer);
     this.normalContent.add(this.contentText);
 
     this.container.add(this.logoContainer);
@@ -182,7 +194,7 @@ export class StatsBox {
         parts.push(claudeStyle(line));
       }
 
-      parts.push(plainChunk("\n")); // blank line between
+      parts.push(plainChunk("\n"));
 
       for (let i = 0; i < WRAPPED_LOGO.length; i++) {
         const line = WRAPPED_LOGO[i]!;
@@ -197,11 +209,9 @@ export class StatsBox {
   }
 
   private buildTitle(): StyledText {
-    const innerWidth = this.boxWidth - 4;
     const claudeStyle = fg(CLAUDE_COLOR);
-    // Centered bold text - CLAUDE orange, WRAPPED white
-    const pad = Math.max(0, Math.floor((innerWidth - 14) / 2)); // "CLAUDE WRAPPED" = 14 chars
-    return t`${" ".repeat(pad)}${bold(claudeStyle("CLAUDE"))} ${bold("WRAPPED")}`;
+    // Bold text - CLAUDE orange, WRAPPED white (centered via flexbox)
+    return t`${bold(claudeStyle("CLAUDE"))} ${bold("WRAPPED")}`;
   }
 
   public setStatsData(data: any) {
