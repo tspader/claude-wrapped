@@ -8,6 +8,7 @@ import {
   FrameBufferRenderable,
   BoxRenderable,
   TextRenderable,
+  SliderRenderable,
   RGBA,
   t as text,
   fg,
@@ -98,6 +99,8 @@ const nodes: DialogueNode[] = [
     text: text`This program grabs Claude Code usage stats, uploads to a database, and compare to other users across the world.
 
 The data is neither sensitive nor identifiable. It's just ${brightYellow("/stats")}.
+
+There's a special surprise at the end!
 
 If you'd still rather not, you can quit the program now`,
     options: [
@@ -352,7 +355,16 @@ ${underline(fg("#58A6FF")("store.steampowered.com/app/2639990/Deep_Copy/"))}
 
 
 ${underline(fg("#58A6FF")("https://github.com/tspader/spn"))}`,
-    next: "end",
+    next: "sandbox",
+  },
+  {
+    id: "sandbox",
+    type: "action",
+    text: text`Scene Sandbox - use arrow keys to adjust sliders, q to quit`,
+    onEnter: async (ctx) => {
+      ctx.setData("sandboxMode", true);
+    },
+    next: "sandbox",
   },
 ];
 
@@ -615,10 +627,68 @@ async function main() {
 
   continueBox.add(continueText);
 
+  const sandboxBox = new BoxRenderable(renderer, {
+    id: "sandbox-box",
+    width: "100%",
+    flexDirection: "column",
+    visible: false,
+  });
+
+  interface SliderConfig {
+    id: string;
+    label: string;
+    min: number;
+    max: number;
+    initial: number;
+    getValue: () => number;
+    setValue: (v: number) => void;
+  }
+
+  const sliderConfigs: SliderConfig[] = [];
+  const sliderRefs: { slider: SliderRenderable; label: TextRenderable; config: SliderConfig }[] = [];
+
+  const createSliderRow = (config: SliderConfig) => {
+    const row = new BoxRenderable(renderer, {
+      id: `slider-row-${config.id}`,
+      width: "100%",
+      flexDirection: "row",
+      alignItems: "center",
+      marginBottom: 1,
+    });
+
+    const labelText = new TextRenderable(renderer, {
+      id: `slider-label-${config.id}`,
+      content: text`${config.label}: ${config.initial.toFixed(2)}`,
+      width: 20,
+    });
+
+    const slider = new SliderRenderable(renderer, {
+      id: `slider-${config.id}`,
+      orientation: "horizontal",
+      width: boxWidth - 26,
+      height: 1,
+      min: config.min,
+      max: config.max,
+      value: config.initial,
+      backgroundColor: "#333333",
+      foregroundColor: CLAUDE_COLOR,
+      onChange: (value) => {
+        config.setValue(value);
+        labelText.content = text`${config.label}: ${value.toFixed(2)}`;
+      },
+    });
+
+    row.add(labelText);
+    row.add(slider);
+    sandboxBox.add(row);
+    sliderRefs.push({ slider, label: labelText, config });
+  };
+
   dialogueBox.add(titleBox);
   dialogueBox.add(contentText);
   dialogueBox.add(optionsBox);
   dialogueBox.add(continueBox);
+  dialogueBox.add(sandboxBox);
   renderer.root.add(dialogueBox);
 
   // ==========================================================================
@@ -654,6 +724,43 @@ async function main() {
   const dramaticLightRadius = 0.5;
 
   let smoothK = 0.0;
+
+  // ==========================================================================
+  // Sandbox Sliders
+  // ==========================================================================
+
+  createSliderRow({
+    id: "cam-x", label: "Camera X", min: -5.0, max: 5.0, initial: cameraState.x,
+    getValue: () => cameraState.x, setValue: (v) => { cameraState.x = v; },
+  });
+  createSliderRow({
+    id: "cam-y", label: "Camera Y", min: -2.0, max: 3.0, initial: cameraState.y,
+    getValue: () => cameraState.y, setValue: (v) => { cameraState.y = v; },
+  });
+  createSliderRow({
+    id: "cam-z", label: "Camera Z", min: -10.0, max: -1.0, initial: cameraState.z,
+    getValue: () => cameraState.z, setValue: (v) => { cameraState.z = v; },
+  });
+  createSliderRow({
+    id: "fov", label: "FOV", min: 10, max: 90, initial: cameraState.fov,
+    getValue: () => cameraState.fov, setValue: (v) => { cameraState.fov = v; },
+  });
+  createSliderRow({
+    id: "ambient", label: "Ambient", min: 0.0, max: 1.0, initial: ambientIntensity,
+    getValue: () => ambientIntensity, setValue: (v) => { ambientIntensity = v; },
+  });
+  createSliderRow({
+    id: "directional", label: "Directional", min: 0.0, max: 2.0, initial: directionalIntensity,
+    getValue: () => directionalIntensity, setValue: (v) => { directionalIntensity = v; },
+  });
+  createSliderRow({
+    id: "smooth-k", label: "Shape Blending", min: 0.0, max: 1.0, initial: smoothK,
+    getValue: () => smoothK, setValue: (v) => { smoothK = v; },
+  });
+  createSliderRow({
+    id: "snow-light", label: "Snow Light", min: 0.0, max: 5.0, initial: snowLightIntensity,
+    getValue: () => snowLightIntensity, setValue: (v) => { snowLightIntensity = v; },
+  });
 
   // ==========================================================================
   // Snow & Camera Noise State
@@ -733,15 +840,33 @@ async function main() {
   let typingFinished = false;
   let selectedOption = 0;
   let options: { label: string; target: string }[] = [];
+  let sandboxMode = false;
+  let selectedSlider = 0;
 
-  dialogue.onTextUpdate = (text, index, finished) => {
-    currentText = text;
+  dialogue.onTextUpdate = (textContent, index, finished) => {
+    currentText = textContent;
     currentIndex = index;
     typingFinished = finished;
     if (index === 0 && !finished) {
       contentText.scrollY = 0;
     }
+    if (dialogue.currentNodeId === "sandbox" && !sandboxMode) {
+      sandboxMode = true;
+      sandboxBox.visible = true;
+      continueBox.visible = false;
+      for (const { slider, label, config } of sliderRefs) {
+        slider.value = config.getValue();
+        label.content = text`${config.label}: ${config.getValue().toFixed(2)}`;
+      }
+      updateSliderSelection();
+    }
   };
+
+  function updateSliderSelection() {
+    sliderRefs.forEach(({ slider }, i) => {
+      slider.foregroundColor = i === selectedSlider ? "#00FF00" : CLAUDE_COLOR;
+    });
+  }
 
   dialogue.onShowOptions = (opts) => {
     options = opts;
@@ -787,20 +912,45 @@ async function main() {
   process.stdin.on("data", (data) => {
     const s = data.toString();
 
+    if (sandboxMode) {
+      if (s === "q" || s === "\u0003") {
+        renderer.stop();
+        process.exit(0);
+      } else if (s === "\u001b[A" || s === "k") {
+        selectedSlider = Math.max(0, selectedSlider - 1);
+        updateSliderSelection();
+      } else if (s === "\u001b[B" || s === "j") {
+        selectedSlider = Math.min(sliderRefs.length - 1, selectedSlider + 1);
+        updateSliderSelection();
+      } else if (s === "\u001b[C" || s === "l") {
+        const ref = sliderRefs[selectedSlider];
+        if (ref) {
+          const range = ref.config.max - ref.config.min;
+          const step = range / 50;
+          ref.slider.value = Math.min(ref.config.max, ref.slider.value + step);
+        }
+      } else if (s === "\u001b[D" || s === "h") {
+        const ref = sliderRefs[selectedSlider];
+        if (ref) {
+          const range = ref.config.max - ref.config.min;
+          const step = range / 50;
+          ref.slider.value = Math.max(ref.config.min, ref.slider.value - step);
+        }
+      }
+      return;
+    }
+
     if (s === "\u001b[C" || s === "l") {
-      // Right arrow
       if (options.length > 0 && dialogue.phase === "waiting") {
         selectedOption = Math.min(selectedOption + 1, options.length - 1);
         rebuildOptions();
       }
     } else if (s === "\u001b[D" || s === "h") {
-      // Left arrow
       if (options.length > 0 && dialogue.phase === "waiting") {
         selectedOption = Math.max(selectedOption - 1, 0);
         rebuildOptions();
       }
     } else if (s === " " || s === "\r" || s === "\n") {
-      // Space/Enter - select option if on prompt, otherwise advance
       if (options.length > 0 && dialogue.phase === "waiting") {
         dialogue.selectOption(selectedOption);
       } else {
