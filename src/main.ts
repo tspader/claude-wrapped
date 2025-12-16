@@ -35,7 +35,7 @@ import {
 } from "./scene";
 import { ActionQueue, easeInOutCubic, easeInQuad } from "./scene/script";
 import { DialogueExecutor, type DialogueNode } from "./scene/dialogue";
-import { seededRandom, createNoiseGenerator } from "./scene/utils";
+import { seededRandom } from "./scene/utils";
 import { checkStatsExistence, readStatsCache, postStatsToApi, invokeClaudeStats } from "./utils/stats";
 
 // =============================================================================
@@ -763,16 +763,10 @@ async function main() {
   });
 
   // ==========================================================================
-  // Snow & Camera Noise State
+  // Snow State
   // ==========================================================================
 
   const rng = seededRandom(123);
-  const pnoise1 = createNoiseGenerator(rng);
-  const noiseOffsetX = rng() * 1000;
-  const noiseOffsetY = rng() * 1000;
-  const noiseOffsetZ = rng() * 1000;
-  const cameraNoiseMagnitude = 0.03;
-  const cameraNoiseSpeed = 0.5;
 
   // Initialize snowflakes
   const snowflakes: Snowflake[] = [];
@@ -1031,14 +1025,8 @@ async function main() {
     const flatScene = compileScene(allObjects, groupDefs, smoothK);
     loadScene(wasm, flatScene);
 
-    // Calculate perlin noise camera jitter
-    const noiseX = pnoise1(noiseOffsetX + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
-    const noiseY = pnoise1(noiseOffsetY + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
-    const noiseZ = pnoise1(noiseOffsetZ + time * cameraNoiseSpeed, 2) * cameraNoiseMagnitude;
-
-    // Use dialogue-controlled camera with perlin noise jitter
     const camera = new Camera({
-      eye: [cameraState.x + noiseX, cameraState.y + noiseY, cameraState.z + noiseZ] as Vec3,
+      eye: [cameraState.x, cameraState.y, cameraState.z] as Vec3,
       at: sceneConfig.camera.at,
       up: sceneConfig.camera.up,
       fov: cameraState.fov,

@@ -2,7 +2,6 @@
  * Shared utilities for scene system.
  */
 
-import { createNoise2D } from "simplex-noise";
 import type { ObjectDef, GroupDef, FlatScene } from "./types";
 
 // =============================================================================
@@ -13,30 +12,6 @@ export function seededRandom(seed: number) {
   return () => {
     seed = (seed * 1103515245 + 12345) & 0x7fffffff;
     return seed / 0x7fffffff;
-  };
-}
-
-// =============================================================================
-// Noise
-// =============================================================================
-
-export function createNoiseGenerator(rng: () => number) {
-  const noise2D = createNoise2D(rng);
-
-  return function pnoise1(x: number, octaves: number = 1): number {
-    let value = 0;
-    let amplitude = 1;
-    let frequency = 1;
-    let maxValue = 0;
-
-    for (let i = 0; i < octaves; i++) {
-      value += noise2D(x * frequency, 0) * amplitude;
-      maxValue += amplitude;
-      amplitude *= 0.5;
-      frequency *= 2;
-    }
-
-    return value / maxValue;
   };
 }
 

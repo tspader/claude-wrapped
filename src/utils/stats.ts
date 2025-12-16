@@ -17,7 +17,8 @@ export async function invokeClaudeStats(): Promise<void> {
   return new Promise((resolve, reject) => {
     // We don't capture output, we just want the side effect (file creation/update)
     const proc = spawn("claude", ["--print", "/stats"], {
-      stdio: "ignore", // We don't need the JSON output on stdout
+      stdio: "ignore",
+      shell: process.platform === "win32",
     });
 
     proc.on("close", (code) => {
@@ -44,7 +45,7 @@ export function readStatsCache(): StatsCache {
 }
 
 function getMachineId(): string {
-  const user = process.env.USER || "unknown";
+  const user = process.env.USER || process.env.USERNAME || "unknown";
   const host = hostname();
   const rawId = `${user}@${host}`;
   return btoa(rawId).replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_").slice(0, 128);

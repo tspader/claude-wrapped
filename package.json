@@ -1,7 +1,10 @@
 {
   "name": "@spader/claude-wrapped",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
+  "engines": {
+    "bun": ">=1.2.0"
+  },
   "bin": {
     "claude-wrapped": "./dist/main.js"
   },
@@ -10,7 +13,7 @@
   ],
   "scripts": {
     "build:wasm": "zig cc --target=wasm32-freestanding -msimd128 -O3 -Wl,--no-entry -rdynamic -o src/wasm/renderer.wasm src/wasm/renderer.c",
-    "build": "bun run build:wasm && bun build src/main.ts --outdir dist --target bun --format esm && cp -r src/wasm dist/",
+    "build": "bun run build:wasm && bun build src/main.ts --outdir dist --target bun --format esm && mkdir -p dist/wasm && cp src/wasm/*.wasm dist/wasm/ && chmod +x dist/main.js && rm -f dist/tree-sitter-* dist/highlights-* dist/injections-*",
     "prepublishOnly": "bun run build",
     "start": "bun run build:wasm && bun src/main.ts"
   },
@@ -22,7 +25,6 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@opentui/core": "^0.1.60",
-    "simplex-noise": "^4.0.3"
+    "@opentui/core": "^0.1.60"
   }
 }
