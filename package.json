@@ -1,6 +1,6 @@
 {
   "name": "@spader/claude-wrapped",
-  "version": "1.0.1",
+  "version": "1.0.3",
   "type": "module",
   "engines": {
     "bun": ">=1.2.0"

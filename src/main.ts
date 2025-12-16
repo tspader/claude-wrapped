@@ -342,19 +342,27 @@ I'm thankful for a world with Inigo Quilez! And Andrew Kelley, and jart, and Car
   {
     id: "epilogue_002",
     type: "text",
-    text: text`And, of course, a world with Fabrice Bellard. Fabrice, if this gets to you -- thanks. You're the god damn man.`,
+    text: text`And, of course, a world with Fabrice Bellard. Fabrice, if this gets to you -- thanks. You're the god damn man.
+
+If you made it this far, thanks. There's a renderer sandbox on the next screen which is fun to play with. But why does mankind do anything if not for the chance of opportunistic shilling...?`,
     next: "end"
   },
   {
     id: "end",
     type: "text",
-    text: text`If you enjoyed this, please play Deep Copy's free demo. It's a a top down point-and-click literary adventure set in a hand-painted science fiction world, for lovers of Philip K. Dick, Pynchon, Disco Elysium, and classic adventure games.
+    text: text`If you enjoyed this, try Deep Copy's free demo. It's a point-and-click literary puzzle game set in a hand-painted science fiction world, for lovers of Philip K. Dick, Pynchon, Disco Elysium, and classic adventure games.
 
-${underline(fg("#58A6FF")("store.steampowered.com/app/2639990/Deep_Copy/"))}
+  http://store.steampowered.com/app/2639990/Deep_Copy
 
+Or try my website, within which the imagination reels with the infinite possiblity of creation. Like, uh...articles about writing good looking C. Infinite, folks.
 
+  https://spader.zone/tricks/
 
-${underline(fg("#58A6FF")("https://github.com/tspader/spn"))}`,
+And, if by some miracle, you're still reading, have a look at my extremely unreleased "Cargo but for C"
+
+  https://github.com/tspader/spn
+
+And now, the sandbox!`,
     next: "sandbox",
   },
   {
